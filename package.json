@@ -1,5 +1,6 @@
 {
   "name": "roua-monorepo",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
   "description": "ROUA: Read-Only User Account standard and toolkit",

@@ -51,3 +51,28 @@ jobs:
           for p in core app cli; do
             (cd packages/$p && npm stage publish --access public --loglevel verbose)
           done
+
+  sbom:
+    name: Attach an SBOM to the release
+    needs: publish
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - name: CycloneDX SBOMs for the published packages
+        run: |
+          for p in core app cli; do
+            npm sbom --sbom-format cyclonedx --omit dev --workspace packages/$p > roua-$p.cdx.json
+          done
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" roua-core.cdx.json roua-app.cdx.json roua-cli.cdx.json --clobber

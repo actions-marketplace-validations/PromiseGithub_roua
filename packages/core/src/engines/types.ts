@@ -29,8 +29,13 @@ export type OtherEngine = Exclude<Engine, "postgresql">;
 
 export type Support = "full" | "tested" | "preview";
 
-/** What the account may read. */
-export type ReadMode = "scope" | "listed";
+/**
+ * What the account may read.
+ *   metadata - structure only (L0): names, columns and types, no rows
+ *   listed   - only the objects you list (L1)
+ *   scope    - everything in scope minus exclusions and secrets (L2)
+ */
+export type ReadMode = "scope" | "listed" | "metadata";
 
 export interface AccountSpec {
   engine: OtherEngine;
@@ -120,6 +125,8 @@ export interface EngineInfo {
     statementTimeout: boolean;
     allowedSources: string | null;
     requireTls: boolean;
+    /** How structure-only (L0) access works, or why it is not offered. */
+    metadata: { how: string } | { unavailable: string };
   };
 }
 
@@ -143,6 +150,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: true,
       allowedSources: "Allowed source IPs",
       requireTls: false,
+      metadata: { how: "Level L0: USAGE on schemas, no SELECT." },
     },
   },
   mysql: {
@@ -164,6 +172,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: true,
       allowedSources: "Allowed hosts",
       requireTls: true,
+      metadata: { unavailable: "MySQL shows a table's structure only to accounts holding a privilege on it, and every such privilege except SHOW VIEW reads or writes data." },
     },
   },
   mariadb: {
@@ -185,6 +194,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: true,
       allowedSources: "Allowed hosts",
       requireTls: true,
+      metadata: { unavailable: "MariaDB shows a table's structure only to accounts holding a privilege on it, and every such privilege except SHOW VIEW reads or writes data." },
     },
   },
   sqlserver: {
@@ -206,6 +216,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: false,
       allowedSources: null,
       requireTls: false,
+      metadata: { how: "VIEW DEFINITION on the schemas and no SELECT anywhere: the catalog is visible, rows are not." },
     },
   },
   oracle: {
@@ -227,6 +238,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: true,
       allowedSources: null,
       requireTls: false,
+      metadata: { unavailable: "Oracle has no per-table privilege that shows structure without READ, and SELECT_CATALOG_ROLE exposes the whole data dictionary." },
     },
   },
   mongodb: {
@@ -248,6 +260,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: false,
       allowedSources: "Allowed client IPs",
       requireTls: false,
+      metadata: { how: "listCollections and listIndexes without find: collection names and indexes, no documents." },
     },
   },
   redis: {
@@ -269,6 +282,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: false,
       allowedSources: null,
       requireTls: false,
+      metadata: { unavailable: "Redis has no schema to expose." },
     },
   },
   snowflake: {
@@ -290,6 +304,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: true,
       allowedSources: "Allowed source IPs",
       requireTls: false,
+      metadata: { how: "REFERENCES on each table: structure is visible, SELECT is not granted." },
     },
   },
   bigquery: {
@@ -311,6 +326,7 @@ export const ENGINE_INFO: Record<Engine, EngineInfo> = {
       statementTimeout: false,
       allowedSources: null,
       requireTls: false,
+      metadata: { how: "roles/bigquery.metadataViewer on each dataset: schemas and table metadata, no rows." },
     },
   },
 };

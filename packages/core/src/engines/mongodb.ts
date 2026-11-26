@@ -11,6 +11,7 @@
  *   temporary users).
  */
 import { engineMetadata, header } from "./common.js";
+import { scheduleTemplates } from "./schedule.js";
 import type { AccountSpec, EnginePlan } from "./types.js";
 
 const js = (v: unknown) => JSON.stringify(v);
@@ -37,6 +38,7 @@ const ROUA = {
   role: ${js(role)},
   password: ${js(spec.password ?? "")},
   include: ${js(include)},   // null = every collection; otherwise regexes
+  actions: ${js(spec.mode === "metadata" ? ["listIndexes"] : ["find", "listIndexes", "collStats"])},   // structure only (L0) has no find
   exclude: ${js(exclude)},
   metadata: ${js(meta)},
   expiresAt: ${js(new Date(spec.expiresAt).toISOString())},
@@ -52,9 +54,9 @@ const collections = target.getCollectionNames()
   .filter((n) => !matches(n, ROUA.exclude))
   .sort();
 
-// find / listIndexes / collStats on each collection; listCollections on the database.
+// find / listIndexes / collStats on each collection (listIndexes only for L0); listCollections on the database.
 // No insert, update, remove, createIndex, or anything else.
-const privileges = collections.map((c) => ({ resource: { db: ROUA.db, collection: c }, actions: ["find", "listIndexes", "collStats"] }));
+const privileges = collections.map((c) => ({ resource: { db: ROUA.db, collection: c }, actions: ROUA.actions }));
 privileges.push({ resource: { db: ROUA.db, collection: "" }, actions: ["listCollections"] });
 
 if (admin.getRole(ROUA.role)) admin.updateRole(ROUA.role, { privileges, roles: [] });
@@ -104,6 +106,7 @@ admin.dropRole(${js(role)});
       { name: "audit.js", run: `mongosh "mongodb://admin@HOST/admin" --file audit.js`, content: auditMongo(spec.name, now) },
       { name: "revoke.js", run: `mongosh "mongodb://admin@HOST/admin" --file revoke.js`, content: revoke },
       { name: "drop.js", run: `mongosh "mongodb://admin@HOST/admin" --file drop.js`, content: drop },
+      { name: "schedule-revoke.md", run: "pick one scheduler and set it up", content: scheduleTemplates(spec, "revoke.js", 'mongosh "$MONGODB_ADMIN_URL" --file revoke.js') },
     ],
     warnings,
     manualSteps: [

@@ -2,6 +2,25 @@
 
 Notable changes to the ROUA specification and tools. The project uses semantic versioning. Before 1.0, minor versions may contain breaking changes.
 
+## 0.4.0 (2026-11-25)
+
+**Tools**
+- Structure-only access (L0) on SQL Server, MongoDB, Snowflake and BigQuery, live-tested on SQL Server and MongoDB. Engines that cannot enforce it (MySQL, MariaDB, Oracle, Redis) say why.
+- PostgreSQL audit: resource-governance checks G1 to G4; C1 now covers the read-only default and audit logging only.
+- `roua audit --sample-values N` (opt-in X2): samples readable text columns for secret formats such as private keys, tokens, API keys and password hashes. It reports columns only, never values.
+- `roua audit --sarif-out FILE --junit-out FILE`, with matching inputs in the GitHub Action.
+- `roua rotate <account>`: new password, same grants, rotation date recorded in the metadata.
+- MongoDB and Redis scripts include ready-made schedules for the revoke (cron, systemd, Kubernetes, GitHub Actions, Windows).
+- Release workflow attaches a CycloneDX SBOM to each GitHub release.
+
+**Specification (0.1 draft, clarifications and informative sections)**
+- §7: rotation and drop requirements. §8: G1 to G4, optional X2, reserved V2 to V4 and V6, check-letter mapping for other engines. §10.1: informative engine profiles. §14 to §17: resource governance, query logging, credential classes, data egress. §13: 1.0 criteria.
+- Open RFCs 0001 to 0005 and a discovery-manifest schema.
+
+**kaizam.com**
+- Support, profile and level tables are in the HTML (crawlable, no JavaScript needed), with a Levels column.
+- New pages: ROUA vs built-in read roles, and the threat model. Footer link to the page checksums.
+
 ## 0.3.0 (2026-11-24)
 
 - **kaizam.com is now a site:** a page per database (kaizam.com/mysql/, /sqlserver/, …) explaining the usual way, what it misses and what ROUA does, guides for AI agents and app-review accounts, plus sitemap.xml, robots.txt, canonical URLs, structured data and a 404 page. Every page is still one offline file with no network requests.

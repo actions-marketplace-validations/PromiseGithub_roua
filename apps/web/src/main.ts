@@ -30,7 +30,7 @@ import {
 import { formToConfig, splitList, type FormValues } from "./form.js";
 import { ENGINE_DEFAULTS } from "./defaults.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -126,26 +126,15 @@ function renderEngineButtons() {
   );
 }
 
+/** The tables are written into the HTML at build time (crawlable, no-JS); only wire up the buttons. */
 function renderTables() {
   const tbody = document.querySelector("#dbTable tbody")!;
-  tbody.innerHTML = ENGINES.map((id) => {
-    const i = ENGINE_INFO[id];
-    return `<tr><td><a href="/${id}/">${esc(i.name)}</a><br><button type="button" class="use" data-use="${id}">Create one</button></td>
-      <td><span class="badge ${i.support}">${SUPPORT_LABEL[i.support]}</span></td><td>${esc(i.versions)}</td>
-      <td>${esc(i.summary)}</td><td>${esc(i.covers || "")}</td></tr>`;
-  }).join("");
   tbody.querySelectorAll<HTMLButtonElement>("button[data-use]").forEach((b) =>
     b.addEventListener("click", () => {
       selectEngine(b.dataset.use as Engine, true);
       $("generator").scrollIntoView();
     }),
   );
-  document.querySelector("#profileTable tbody")!.innerHTML = PROFILES.map(
-    (p) => `<tr><td><b>${esc(PROFILE_INFO[p].title)}</b> <code>${p}</code></td><td>${PROFILE_INFO[p].maxExpiryDays} days</td></tr>`,
-  ).join("");
-  document.querySelector("#levelTable tbody")!.innerHTML = LEVELS.map(
-    (l) => `<tr><td><b>${l}</b> ${esc(LEVEL_INFO[l].name)}</td><td>${esc(LEVEL_INFO[l].canRead)}</td></tr>`,
-  ).join("");
 }
 
 function selectEngine(id: Engine, resetFields: boolean) {
@@ -184,7 +173,13 @@ function refresh() {
   const p = $<HTMLSelectElement>("profile").value as Profile;
   const l = $<HTMLSelectElement>("level").value as Level;
   const mode = $<HTMLSelectElement>("mode").value;
-  const listed = !pg && (mode === "listed" || engine === "redis");
+  const metaOk = !pg && "how" in f.metadata;
+  const metaOpt = document.querySelector<HTMLOptionElement>('#mode option[value="metadata"]')!;
+  metaOpt.hidden = !metaOk;
+  metaOpt.disabled = !metaOk;
+  if (!metaOk && mode === "metadata") $<HTMLSelectElement>("mode").value = "scope";
+  const meta = !pg && metaOk && $<HTMLSelectElement>("mode").value === "metadata";
+  const listed = !pg && !meta && ($<HTMLSelectElement>("mode").value === "listed" || engine === "redis");
 
   document.querySelectorAll<HTMLElement>("[data-engines]").forEach((el) => {
     const want = (el.dataset.engines ?? "").split(" ");
@@ -202,10 +197,10 @@ function refresh() {
   show("objectsWrap", listed);
   $("objectsLabel").textContent = f.objects;
   $("objectsHelp").textContent = d.objectsHelp;
-  show("excludeWrap", pg ? l !== "L0" : !listed && f.exclude !== null);
+  show("excludeWrap", pg ? l !== "L0" : !listed && !meta && f.exclude !== null);
   $("excludeLabel").textContent = f.exclude ?? "";
   $("excludeHelp").textContent = d.excludeHelp;
-  const cols = pg ? ["L1", "L2", "L4", "L5"].includes(l) : f.columns;
+  const cols = pg ? ["L1", "L2", "L4", "L5"].includes(l) : f.columns && !meta;
   show("columnsDenyWrap", cols);
   show("columnsAllowWrap", cols);
   $<HTMLInputElement>("columnsDeny").placeholder = d.columnPlaceholder;
@@ -228,7 +223,7 @@ function refresh() {
   $("expiresTimeWrap").hidden = !(pg && l === "L5");
   $("levelHelp").textContent = pg
     ? `${LEVEL_INFO[l].canRead} ${PROFILE_INFO[p].description}`
-    : `${listed ? LEVEL_INFO.L1.canRead : LEVEL_INFO.L2.canRead} ${PROFILE_INFO[p].description}`;
+    : `${meta ? `${LEVEL_INFO.L0.canRead} On ${info.name}: ${"how" in f.metadata ? f.metadata.how : ""}` : listed ? LEVEL_INFO.L1.canRead : LEVEL_INFO.L2.canRead} ${PROFILE_INFO[p].description}`;
   $("expiryHelp").textContent =
     pg && l === "L5" ? "L5 accounts must expire within 24 hours and need two approvers." : `The ${p} profile allows at most ${PROFILE_INFO[p].maxExpiryDays} days.`;
   $("dbLegend").textContent = info.name;
@@ -279,7 +274,8 @@ function otherSpec(): AccountSpec {
   const v = (id: string) => (isHidden(id) ? "" : $(id).value.trim());
   const num = (id: string) => (v(id) ? Number(v(id)) : undefined);
   const e = engine as OtherEngine;
-  const listed = e === "redis" || $<HTMLSelectElement>("mode").value === "listed";
+  const modeValue = $<HTMLSelectElement>("mode").value;
+  const listed = e === "redis" || modeValue === "listed";
   return {
     engine: e,
     name: $("name").value.trim(),
@@ -289,7 +285,7 @@ function otherSpec(): AccountSpec {
     approvedBy: splitList($("approvedBy").value),
     approvalRef: $("approvalRef").value.trim() || undefined,
     expiresAt: $("expiresDate").value ? `${$("expiresDate").value}T00:00:00Z` : "",
-    mode: listed ? "listed" : "scope",
+    mode: listed ? "listed" : modeValue === "metadata" ? "metadata" : "scope",
     database: v("database") || undefined,
     schemas: splitList(v("schemas")),
     objects: splitList(v("objects")),

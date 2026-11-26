@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
 import { PAGES, SITE } from "./src/pages.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,19 @@ const found = forbidden.filter((f) => script.includes(f));
 if (found.length) throw new Error(`Bundle must not use network APIs: ${found.join(", ")}`);
 
 const buildId = createHash("sha256").update(script + style).digest("hex").slice(0, 12);
+
+// Tables rendered into the HTML (not by JavaScript), so search engines, AI
+// assistants and readers without JavaScript see them. Data comes from core.
+const core = await import(pathToFileURL(join(here, "../../packages/core/dist/index.js")).href);
+const h = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const SUPPORT_LABEL = { full: "Full", tested: "Tested in CI", preview: "Preview" };
+const levelsFor = (id, info) => (id === "postgresql" ? "L0–L5" : "how" in info.fields.metadata ? "L0, L1, L2" : "L1, L2");
+const dbRows = core.ENGINES.map((id) => {
+  const i = core.ENGINE_INFO[id];
+  return `<tr><td><a href="/${id}/">${h(i.name)}</a><br><button type="button" class="use" data-use="${id}">Create one</button></td><td><span class="badge ${i.support}">${SUPPORT_LABEL[i.support]}</span></td><td>${h(i.versions)}</td><td>${levelsFor(id, i)}</td><td>${h(i.summary)}</td><td>${h(i.covers || "")}</td></tr>`;
+}).join("\n        ");
+const profileRows = core.PROFILES.map((p) => `<tr><td><b>${h(core.PROFILE_INFO[p].title)}</b> <code>${p}</code></td><td>${core.PROFILE_INFO[p].maxExpiryDays} days</td></tr>`).join("\n          ");
+const levelRows = core.LEVELS.map((l) => `<tr><td><b>${l}</b> ${h(core.LEVEL_INFO[l].name)}</td><td>${h(core.LEVEL_INFO[l].canRead)}</td></tr>`).join("\n          ");
 const template = readFileSync(src("template.html"), "utf8");
 const attr = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 const json = (o) => JSON.stringify(o).replace(/</g, "\\u003c");
@@ -51,6 +65,9 @@ const footerLinks = [
   ...PAGES.filter((p) => p.engine).map((p) => `<a href="/${p.path}">${p.eyebrow.replace("ROUA for ", "")}</a>`),
   `<a href="/ai-agents/">AI agents</a>`,
   `<a href="/app-review/">App review accounts</a>`,
+  `<a href="/compare/">ROUA vs built-in read roles</a>`,
+  `<a href="/threat-model/">Threat model</a>`,
+  `<a href="/SHA256SUMS">Verify this page (SHA-256)</a>`,
 ].join("\n      ");
 
 function render(page, { notFound = false } = {}) {
@@ -92,6 +109,9 @@ function render(page, { notFound = false } = {}) {
     .replace("__LEDE__", page.lede)
     .replace("__PAGE_SECTION__", () => page.section)
     .replace("__FOOTER_LINKS__", footerLinks)
+    .replace("__DB_ROWS__", () => dbRows)
+    .replace("__PROFILE_ROWS__", () => profileRows)
+    .replace("__LEVEL_ROWS__", () => levelRows)
     .replace("__BUILD__", buildId)
     .replace("<style>__STYLE__</style>", () => `<style>${style}</style>`)
     .replace("<script>__SCRIPT__</script>", () => `<script>${script}</script>`);

@@ -44,7 +44,13 @@ export function planBigQuery(spec: AccountSpec, now: Date): EnginePlan {
   const union = (view: "TABLES" | "COLUMNS", alias: string, cols: string) =>
     datasets.map((d) => `SELECT ${cols} FROM \`${project}.${d}.INFORMATION_SCHEMA.${view}\` ${alias}`).join("\n      UNION ALL ");
 
-  const grants = `-- grants.sql: table-level read for ${email}. Run by setup.sh (bq query), or paste into the BigQuery console.
+  const metadataGrants = [
+    `-- grants.sql: structure only (L0) for ${email}: metadata of these datasets, no rows.`,
+    "-- PREVIEW: generated from Google's documentation, not yet tested against a live project. Review before running.",
+    ...datasets.map((d) => `GRANT \`roles/bigquery.metadataViewer\` ON SCHEMA \`${project}.${d}\` TO "${member}";`),
+    "",
+  ].join("\n");
+  const grants = spec.mode === "metadata" ? metadataGrants : `-- grants.sql: table-level read for ${email}. Run by setup.sh (bq query), or paste into the BigQuery console.
 -- PREVIEW: generated from Google's documentation, not yet tested against a live project. Review before running.
 DECLARE granted INT64 DEFAULT 0;
 DECLARE skipped ARRAY<STRING> DEFAULT [];

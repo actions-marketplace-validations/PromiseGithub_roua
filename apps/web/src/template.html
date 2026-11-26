@@ -110,6 +110,7 @@ __PAGE_SECTION__
             <select id="mode">
               <option value="scope">Everything in scope, minus exclusions</option>
               <option value="listed">Only what I list</option>
+              <option value="metadata">Structure only, no rows (L0)</option>
             </select></label>
         </div>
         <p id="levelHelp" class="help"></p>
@@ -272,8 +273,8 @@ public.users.date_of_birth: year_only</textarea>
       <b>Tested</b>: every change runs the generated scripts against the real engine in CI, logs in as the account and proves writes fail.
       <b>Preview</b>: built from the vendor’s documentation and not yet run against a live service; review before use, and tell us what breaks.</p>
     <div class="tablewrap"><table class="dbtable" id="dbTable">
-      <thead><tr><th scope="col">Database</th><th scope="col">Support</th><th scope="col">Versions</th><th scope="col">How ROUA works there</th><th scope="col">Also covers</th></tr></thead>
-      <tbody></tbody>
+      <thead><tr><th scope="col">Database</th><th scope="col">Support</th><th scope="col">Versions</th><th scope="col">Levels</th><th scope="col">How ROUA works there</th><th scope="col">Also covers</th></tr></thead>
+      <tbody>__DB_ROWS__</tbody>
     </table></div>
   </div>
 </section>
@@ -325,12 +326,12 @@ public.users.date_of_birth: year_only</textarea>
     <div class="cards two">
       <article class="card">
         <h3>Profiles: why the account exists</h3>
-        <table class="mini" id="profileTable"><thead><tr><th scope="col">Profile</th><th scope="col">Max lifetime</th></tr></thead><tbody></tbody></table>
+        <table class="mini" id="profileTable"><thead><tr><th scope="col">Profile</th><th scope="col">Max lifetime</th></tr></thead><tbody>__PROFILE_ROWS__</tbody></table>
       </article>
       <article class="card">
         <h3>Levels: what it can see</h3>
-        <table class="mini" id="levelTable"><thead><tr><th scope="col">Level</th><th scope="col">Can read</th></tr></thead><tbody></tbody></table>
-        <p class="help">All levels are available on PostgreSQL. Other databases offer L1 (only what you list) and L2 (everything in scope minus exclusions and secrets).</p>
+        <table class="mini" id="levelTable"><thead><tr><th scope="col">Level</th><th scope="col">Can read</th></tr></thead><tbody>__LEVEL_ROWS__</tbody></table>
+        <p class="help">All levels are available on PostgreSQL. SQL Server, MongoDB, Snowflake and BigQuery also offer L0; the other databases offer L1 (only what you list) and L2 (everything in scope minus exclusions and secrets). See the Levels column above.</p>
       </article>
     </div>
   </div>

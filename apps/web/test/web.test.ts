@@ -92,6 +92,10 @@ describe("web generator", () => {
     it("offers every database and the account check", () => {
       const html = read("index.html");
       for (const id of ["engines", "checkForm", "dbTable", "generator", "check", "faq"]) expect(html).toContain(`id="${id}"`);
+      // The support, profile and level tables are in the HTML itself (crawlable, readable without JavaScript).
+      expect(html.match(/data-use="/g)?.length).toBe(9);
+      expect(/<table class="mini" id="profileTable">.*?<tbody>(.*?)<\/tbody>/s.exec(html)![1]!.match(/<tr>/g)?.length).toBe(8);
+      expect(/<table class="mini" id="levelTable">.*?<tbody>(.*?)<\/tbody>/s.exec(html)![1]!.match(/<tr>/g)?.length).toBe(6);
     });
   });
 });

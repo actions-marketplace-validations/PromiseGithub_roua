@@ -69,6 +69,10 @@ export function validateSpec(spec: AccountSpec, now: Date = new Date()): SpecVal
     for (const s of spec.schemas ?? []) ident(s, f.schemas.replace(/s( \(.*\))?$/, ""));
   }
 
+  if (!["scope", "listed", "metadata"].includes(spec.mode)) errors.push(`Unknown mode ${JSON.stringify(spec.mode)}`);
+  if (spec.mode === "metadata" && "unavailable" in f.metadata) {
+    errors.push(`Structure-only access (L0) is not available on ${info.name}: ${f.metadata.unavailable}`);
+  }
   const objects = spec.objects ?? [];
   if (spec.mode === "listed" || spec.engine === "redis") {
     if (!objects.length) errors.push(`${f.objects}: list at least one.`);
@@ -120,12 +124,15 @@ export function validateSpec(spec: AccountSpec, now: Date = new Date()): SpecVal
   return { errors, warnings };
 }
 
+/** The ROUA level a spec corresponds to. */
+export const levelOf = (spec: AccountSpec): "L0" | "L1" | "L2" => (spec.mode === "metadata" ? "L0" : spec.mode === "listed" ? "L1" : "L2");
+
 /** ROUA/0.1 metadata string, as stored in comments where the engine has them. */
 export function engineMetadata(spec: AccountSpec, now: Date): string {
   const parts = [
     `ROUA/${ROUA_SPEC_VERSION}`,
     `profile=${spec.profile}`,
-    `level=${spec.mode === "listed" ? "L1" : "L2"}`,
+    `level=${levelOf(spec)}`,
     `owner=${spec.owner.trim()}`,
   ];
   if (spec.approvedBy?.length) parts.push(`approved_by=${spec.approvedBy.join(",")}`);

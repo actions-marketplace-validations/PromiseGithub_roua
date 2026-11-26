@@ -30,7 +30,7 @@ FAIL  X1  No secret-pattern columns readable
 NOT READ-ONLY (or not safe to hand over)   3 fail, 7 warn, 7 pass, 1 info
 ```
 
-The audit is read-only and needs nothing installed in the database. It follows every path a role has to write: table and column grants, roles reachable through `SET ROLE`, ownership, sequences, SECURITY DEFINER functions, large objects, foreign servers and `pg_hba.conf` `trust` rules. It also lists secret-looking columns the role can read. Each finding comes with a fix. Use `--all` to audit every login role, and `--json` for CI.
+The audit is read-only and needs nothing installed in the database. It follows every path a role has to write: table and column grants, roles reachable through `SET ROLE`, ownership, sequences, SECURITY DEFINER functions, large objects, foreign servers and `pg_hba.conf` `trust` rules. It also lists secret-looking columns the role can read, and reports missing time, idle-transaction and lock limits (G1 to G4). Each finding comes with a fix. Use `--all` to audit every login role, `--json` for scripts, and `--sarif-out` or `--junit-out` for code scanning and CI test reports. `--sample-values 20` (opt-in) also samples readable text columns for secrets in badly named columns, such as tokens, private keys and password hashes; it reports columns, never values.
 
 No Node.js? The same checks ship as plain SQL: `psql "$ADMIN_DATABASE_URL" -v role=readonly -f` [`audit.sql`](audit.sql)
 
@@ -40,6 +40,7 @@ No Node.js? The same checks ship as plain SQL: `psql "$ADMIN_DATABASE_URL" -v ro
 $ npx @roua-dev/cli init --profile agent --name roua_agent_docs --database appdb
 $ npx @roua-dev/cli plan            # prints the SQL; changes nothing
 $ npx @roua-dev/cli apply           # one transaction, then logs in AS the account and proves it
+$ npx @roua-dev/cli rotate roua_agent_docs   # new password, same grants
 $ npx @roua-dev/cli revoke roua_agent_docs
 ```
 
@@ -76,12 +77,13 @@ plan.files; // setup.sql, audit.sql, revoke.sql, drop.sql
 ## In CI: the GitHub Action
 
 ```yaml
-- uses: PromiseGithub/roua@v0.3.0
+- uses: PromiseGithub/roua@v0.4.0
   env:
     ADMIN_DATABASE_URL: ${{ secrets.ADMIN_DATABASE_URL }}
   with:
     roles: readonly reporting_ro     # or: all: true
     fail-on: fail                    # fail | warn | never
+    sarif-file: roua.sarif           # optional: upload with github/codeql-action/upload-sarif
 ```
 
 The step fails when a role can write, read secrets or never expires, and writes a summary table and annotations. Outputs: `ok` and `report` (JSON).
@@ -92,7 +94,7 @@ The step fails when a role can write, read secrets or never expires, and writes 
 { "mcpServers": { "roua": { "command": "npx", "args": ["-y", "@roua-dev/cli", "mcp"] } } }
 ```
 
-Tools: `list_engines`, `audit_script`, `generate_account_scripts` (writes scripts to a folder; passwords and keys go to owner-only files, never into the conversation) and `audit_postgres_role` (live and read-only; set `ADMIN_DATABASE_URL` in the server's environment). The server has no dependencies beyond the CLI's own. Registry name: `io.github.PromiseGithub/roua`.
+Tools ([reference](docs/MCP.md)): `list_engines`, `audit_script`, `generate_account_scripts` (writes scripts to a folder; passwords and keys go to owner-only files, never into the conversation) and `audit_postgres_role` (live and read-only; set `ADMIN_DATABASE_URL` in the server's environment). The server has no dependencies beyond the CLI's own. Registry name: `io.github.PromiseGithub/roua`.
 
 ## Docker
 

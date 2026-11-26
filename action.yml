@@ -22,10 +22,22 @@ inputs:
     description: "fail (default) fails the step on FAIL results; warn also fails on WARN; never only reports."
     required: false
     default: fail
+  sarif-file:
+    description: Also write a SARIF report to this path (upload it with github/codeql-action/upload-sarif for code scanning).
+    required: false
+    default: ""
+  junit-file:
+    description: Also write a JUnit XML report to this path (for CI test-report viewers).
+    required: false
+    default: ""
+  sample-values:
+    description: "Opt-in: sample this many rows per readable text column and warn about secret-looking values (never printed)."
+    required: false
+    default: ""
   cli-version:
     description: Version of @roua-dev/cli to run.
     required: false
-    default: "0.3.0"
+    default: "0.4.0"
   cli-path:
     description: Run a local build of the CLI (path to bin.js) instead of the npm package. For testing this action.
     required: false
@@ -51,6 +63,9 @@ runs:
         ROUA_FAIL_ON: ${{ inputs.fail-on }}
         ROUA_CLI_VERSION: ${{ inputs.cli-version }}
         ROUA_CLI_PATH: ${{ inputs.cli-path }}
+        ROUA_SARIF: ${{ inputs.sarif-file }}
+        ROUA_JUNIT: ${{ inputs.junit-file }}
+        ROUA_SAMPLE: ${{ inputs.sample-values }}
       run: |
         # GitHub runs this with -e; the audit's own exit code is handled below.
         set +e -uo pipefail
@@ -58,6 +73,9 @@ runs:
         for r in $(echo "$ROUA_ROLES" | tr ',\n' '  '); do args+=(--role "$r"); done
         [ "$ROUA_ALL" = "true" ] && args+=(--all)
         [ "$ROUA_FAIL_ON" = "warn" ] && args+=(--strict)
+        [ -n "$ROUA_SARIF" ] && args+=(--sarif-out "$ROUA_SARIF")
+        [ -n "$ROUA_JUNIT" ] && args+=(--junit-out "$ROUA_JUNIT")
+        [ -n "$ROUA_SAMPLE" ] && args+=(--sample-values "$ROUA_SAMPLE")
         if [ -n "$ROUA_CLI_PATH" ]; then cli=(node "$ROUA_CLI_PATH"); else cli=(npx --yes "@roua-dev/cli@$ROUA_CLI_VERSION"); fi
         report="$RUNNER_TEMP/roua-report.json"
         "${cli[@]}" "${args[@]}" > "$report"

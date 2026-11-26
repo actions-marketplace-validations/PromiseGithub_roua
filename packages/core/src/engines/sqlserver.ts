@@ -48,6 +48,17 @@ function objectFilter(spec: AccountSpec): string {
   return parts.join(" AND ");
 }
 
+/** L0: the catalog of the chosen schemas is visible, no rows are. */
+function metadataGrants(spec: AccountSpec, u: string): string {
+  return `-- 4. Structure only (L0): VIEW DEFINITION shows tables, columns and types in these
+--    schemas. No SELECT is granted on any table or view. (A database-wide DENY SELECT
+--    is deliberately not used: it would also hide the catalog views this level exists for.)
+${(spec.schemas ?? []).map((s) => `GRANT VIEW DEFINITION ON SCHEMA::${msIdent(s)} TO ${u};`).join("\n")}
+PRINT N'ROUA: structure-only access granted on ${(spec.schemas ?? []).length} schema(s).';
+GO
+`;
+}
+
 function killSessions(name: string, contained: boolean): string {
   const col = contained ? "original_login_name" : "login_name";
   return `DECLARE @roua_kill nvarchar(max) = N'';
@@ -133,7 +144,7 @@ GO
 --    membership added later by mistake.
 DENY ${DENIED.join(", ")} TO ${u};
 GO
--- 4. Grant SELECT per table and view, computed now (tables created later are
+${spec.mode === "metadata" ? metadataGrants(spec, u) : `-- 4. Grant SELECT per table and view, computed now (tables created later are
 --    not readable). Tables with hidden columns get SELECT on the other columns.
 CREATE OR ALTER FUNCTION dbo.roua_tmp_snake (@s sysname) RETURNS nvarchar(400) AS
 BEGIN
@@ -178,7 +189,7 @@ DEALLOCATE roua_objs;
 DROP FUNCTION dbo.roua_tmp_snake;
 PRINT CONCAT(N'ROUA: SELECT granted on ', @granted, N' objects (', @partial, N' with hidden columns).');
 GO
--- 5. Record what the account is for, where every admin can see it.
+`}-- 5. Record what the account is for, where every admin can see it.
 IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 4 AND major_id = USER_ID(${msLit(name)}) AND name = N'roua')
   EXEC sys.sp_dropextendedproperty @name = N'roua', @level0type = N'USER', @level0name = ${msLit(name)};
 EXEC sys.sp_addextendedproperty @name = N'roua', @value = ${msLit(meta)}, @level0type = N'USER', @level0name = ${msLit(name)};

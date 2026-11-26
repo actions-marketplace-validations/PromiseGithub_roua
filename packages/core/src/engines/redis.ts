@@ -10,6 +10,7 @@
  */
 import { redisPasswordHash } from "../hashes.js";
 import { header } from "./common.js";
+import { scheduleTemplates } from "./schedule.js";
 import type { AccountSpec, EnginePlan } from "./types.js";
 
 export function redisAclRules(spec: AccountSpec): string {
@@ -61,6 +62,7 @@ ACL SAVE
       { name: "audit.sh", run: "REDISCLI_AUTH=... REDIS_CLI='redis-cli -h HOST --user admin' sh audit.sh", content: auditRedis(u, now, sample, spec.redis7 !== false) },
       { name: "revoke.redis", run: "redis-cli -h HOST --user admin --askpass < revoke.redis", content: revoke },
       { name: "drop.redis", run: "redis-cli -h HOST --user admin --askpass < drop.redis", content: drop },
+      { name: "schedule-revoke.md", run: "pick one scheduler and set it up", content: scheduleTemplates(spec, "revoke.redis", 'redis-cli -u "$REDIS_ADMIN_URL" < revoke.redis') },
     ],
     warnings: spec.redis7 === false ? ["Redis 6.2 has no read-only key permissions (%R~); write commands are still blocked by command category."] : [],
     manualSteps: [

@@ -51,7 +51,9 @@ GRANT USAGE ON WAREHOUSE ${WH} TO ROLE ${R};
 GRANT USAGE ON DATABASE ${DB} TO ROLE ${R};
 ${schemas.map((s) => `GRANT USAGE ON SCHEMA ${DB}.${s} TO ROLE ${R};`).join("\n")}
 
--- 2. SELECT per table and view, as they exist now. Tables with hidden columns are skipped and listed.
+${spec.mode === "metadata"
+    ? "-- 2. Structure only (L0): REFERENCES per table and view shows columns and types. No SELECT."
+    : "-- 2. SELECT per table and view, as they exist now. Tables with hidden columns are skipped and listed."}
 EXECUTE IMMEDIATE $$
 DECLARE
   granted INTEGER DEFAULT 0;
@@ -67,8 +69,8 @@ DECLARE
      ORDER BY 1, 2;
 BEGIN
   FOR r IN c1 DO
-    IF (r.H = 0) THEN
-      EXECUTE IMMEDIATE 'GRANT SELECT ON ' ||
+    IF (${spec.mode === "metadata" ? "TRUE" : "r.H = 0"}) THEN
+      EXECUTE IMMEDIATE 'GRANT ${spec.mode === "metadata" ? "REFERENCES" : "SELECT"} ON ' ||
         CASE r.K WHEN 'VIEW' THEN 'VIEW' WHEN 'MATERIALIZED VIEW' THEN 'MATERIALIZED VIEW' WHEN 'EXTERNAL TABLE' THEN 'EXTERNAL TABLE' WHEN 'DYNAMIC TABLE' THEN 'DYNAMIC TABLE' ELSE 'TABLE' END ||
         ' ${DB}."' || REPLACE(r.S, '"', '""') || '"."' || REPLACE(r.N, '"', '""') || '" TO ROLE ${R}';
       granted := granted + 1;

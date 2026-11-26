@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PromiseGithub/roua/schemas/roua-discovery.schema.json",
+  "title": "ROUA discovery manifest (/.well-known/roua.json), draft 0.1 (RFC 0001)",
+  "type": "object",
+  "required": ["roua_discovery_version", "organization", "request"],
+  "additionalProperties": false,
+  "properties": {
+    "roua_discovery_version": { "const": "0.1" },
+    "organization": { "type": "string", "maxLength": 200 },
+    "policy_url": { "type": "string", "format": "uri" },
+    "request": {
+      "type": "object",
+      "required": ["url"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "approval": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "profiles": { "type": "array", "uniqueItems": true, "items": { "enum": ["agent", "demo", "review", "audit", "support", "training", "analytics", "custom"] } },
+    "levels": { "type": "array", "uniqueItems": true, "items": { "enum": ["L0", "L1", "L2", "L3", "L4", "L5"] } },
+    "max_lifetime_days": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 365 } },
+    "engines": { "type": "array", "uniqueItems": true, "items": { "enum": ["postgresql", "mysql", "mariadb", "sqlserver", "oracle", "mongodb", "redis", "snowflake", "bigquery"] } },
+    "logging": { "type": "string", "maxLength": 300 },
+    "contact": { "type": "string", "format": "uri" }
+  }
+}

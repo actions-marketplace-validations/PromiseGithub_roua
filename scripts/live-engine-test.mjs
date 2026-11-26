@@ -200,6 +200,18 @@ GO`;
     expectAllowed("login after re-setup", asUser("SELECT 1"));
     check("revoke", adminFile("revoke.sql", file(plan, "revoke")).ok);
     expectDenied("login after revoke", asUser("SELECT 1"));
+    // Structure only (L0): the catalog is visible, rows are not.
+    const META = "roua_ci_meta";
+    const asMeta = (sql) => docker(["exec", cid, sqlcmd, "-S", "localhost", "-U", META, "-P", PW, "-C", "-b", "-d", "appdb", "-h", "-1", "-Q", sql]);
+    const meta = planEngine(spec({ name: META, mode: "metadata", exclude: [], columnsDeny: [] }), new Date());
+    const m = adminFile("setup-meta.sql", file(meta, "setup"));
+    check("L0 setup", m.ok, m.out);
+    const cols = asMeta("SET NOCOUNT ON; SELECT CASE WHEN COUNT(*) = 3 THEN 'META_OK' ELSE 'META_MISSING' END FROM sys.columns WHERE object_id = OBJECT_ID('app.customers')");
+    check("L0: column metadata of app.customers is visible", cols.ok && cols.out.includes("META_OK"), cols.out);
+    expectDenied("L0: SELECT name FROM app.customers", asMeta("SELECT name FROM app.customers"));
+    expectDenied("L0: INSERT", asMeta("INSERT INTO app.customers VALUES (9, N'x', N'y')"));
+    const ma = adminFile("audit-meta.sql", file(meta, "audit"));
+    check("L0 audit has no FAIL", ma.ok && !/\bFAIL\b/.test(ma.out), ma.out);
   },
 
   async oracle() {
@@ -282,6 +294,17 @@ COMMIT;
     console.log(audit.out);
     check("revoke", adminFile("revoke.js", file(plan, "revoke")).ok);
     expectDenied("login after revoke", asUser(`db.customers.findOne()`));
+    // Structure only (L0): collection names and indexes, no documents.
+    const META = "roua_ci_meta";
+    const asMeta = (js) => docker(["exec", cid, "mongosh", "--quiet", `mongodb://${META}:${PW}@localhost/appdb?authSource=admin`, "--eval", js]);
+    const meta = planEngine(spec({ name: META, mode: "metadata" }), new Date());
+    const ms = adminFile("setup-meta.js", file(meta, "setup"));
+    check("L0 setup", ms.ok && !/Error/.test(ms.out), ms.out);
+    const names = asMeta(`print(db.getCollectionNames().join(","))`);
+    check("L0: collection names are visible", names.ok && names.out.includes("customers"), names.out);
+    expectAllowed("L0: listIndexes", asMeta(`printjson(db.customers.getIndexes())`));
+    expectDenied("L0: find", asMeta(`db.customers.find().toArray()`));
+    expectDenied("L0: insertOne", asMeta(`db.customers.insertOne({ _id: 9 })`));
   },
 
   async redis() {

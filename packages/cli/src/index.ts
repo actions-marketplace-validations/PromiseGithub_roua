@@ -10,6 +10,8 @@ import {
   ROUA_SPEC_VERSION,
   auditRole,
   formatReport,
+  toJunit,
+  toSarif,
   generatePassword,
   parseMetadata,
   planPostgres,
@@ -25,7 +27,7 @@ import {
 import { connect, redactUrl, urlForUser, urlFromEnv, UsageError } from "./db.js";
 import { loadConfig } from "./config-file.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 const HELP = `roua ${VERSION}: Read-Only User Accounts for PostgreSQL (ROUA spec ${ROUA_SPEC_VERSION}, draft)
 
@@ -36,6 +38,7 @@ Is your read-only user actually read-only?
   roua init   [--profile agent] [--level L2] [--name ...]   Write a starter roua.yaml
   roua plan   [-f roua.yaml] [--out dir]                    Print the SQL; changes nothing
   roua apply  [-f roua.yaml] [--yes] [--secret-out file]    Create/update the account, then verify it
+  roua rotate <account> [--secret-out file] [--end-sessions] Give the account a new password
   roua revoke <account> [--drop] [--yes]                    Disable login and end open sessions
   roua list                                                 List ROUA accounts and their expiry
   roua expire --due [--dry-run]                             Revoke every ROUA account past its expiry
@@ -46,6 +49,8 @@ Connections (read from environment variables, never from arguments):
   verify                               --url-env NAME   default ROUA_DATABASE_URL
 
 Output: --json for machine-readable reports, --strict to fail on warnings, --no-color.
+Audit:  --sarif-out FILE (GitHub code scanning), --junit-out FILE (CI test reports),
+        --sample-values N (opt-in: sample N rows per readable text column for secret-looking values).
 Exit codes: 0 ok, 1 checks failed, 2 usage or connection error.
 
 Docs, spec and issues: https://github.com/PromiseGithub/roua
@@ -91,6 +96,8 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
         return await cmdPlan(rest, io);
       case "apply":
         return await cmdApply(rest, io);
+      case "rotate":
+        return await cmdRotate(rest, io);
       case "revoke":
         return await cmdRevoke(rest, io);
       case "list":
@@ -155,7 +162,15 @@ function printReports(reports: AuditReport[], io: Io, values: { json?: boolean; 
 
 // ---------------------------------------------------------------- audit
 async function cmdAudit(args: string[], io: Io): Promise<number> {
-  const { values } = parse(args, { role: { type: "string", multiple: true }, all: { type: "boolean" } });
+  const { values } = parse(args, {
+    role: { type: "string", multiple: true },
+    all: { type: "boolean" },
+    "sample-values": { type: "string" },
+    "sarif-out": { type: "string" },
+    "junit-out": { type: "string" },
+  });
+  const sample = values["sample-values"] === undefined ? 0 : Number(values["sample-values"]);
+  if (!Number.isInteger(sample) || sample < 0 || sample > 200) throw new UsageError("--sample-values takes a number of rows from 1 to 200.");
   const roles = values.role ?? [];
   if (!roles.length && !values.all) throw new UsageError("Pass --role <name> (repeatable) or --all.");
   const conn = await connect(urlFromEnv(values["url-env"] ?? "ADMIN_DATABASE_URL"));
@@ -172,8 +187,10 @@ async function cmdAudit(args: string[], io: Io): Promise<number> {
       }
     }
     const reports: AuditReport[] = [];
-    for (const role of targets) reports.push(await auditRole(conn.exec, role));
+    for (const role of targets) reports.push(await auditRole(conn.exec, role, { sampleValues: sample || undefined }));
     printReports(reports, io, values);
+    if (values["sarif-out"]) writeFileSync(values["sarif-out"], toSarif(reports, { version: VERSION }));
+    if (values["junit-out"]) writeFileSync(values["junit-out"], toJunit(reports, { strict: Boolean(values.strict) }));
     if (!values.json && reports.length > 1) {
       const bad = reports.filter((r) => !r.ok).map((r) => r.role);
       io.out(`\n${reports.length} role(s) audited. ${bad.length ? `Not read-only: ${bad.join(", ")}` : "All read-only."}`);
@@ -394,6 +411,47 @@ async function cmdRevoke(args: string[], io: Io): Promise<number> {
       await conn.exec(`DROP ROLE ${ident}`);
       io.out(`Dropped ${account}. If it had access to other databases, run DROP OWNED BY ${ident} there first.`);
     }
+    return 0;
+  } finally {
+    await conn.close();
+  }
+}
+
+// ---------------------------------------------------------------- rotate
+async function cmdRotate(args: string[], io: Io): Promise<number> {
+  const { values, positionals } = parse(args, {
+    "secret-out": { type: "string" },
+    "end-sessions": { type: "boolean" },
+    force: { type: "boolean" },
+  });
+  const account = positionals[0];
+  if (!account) throw new UsageError("Usage: roua rotate <account> [--secret-out file] [--end-sessions]");
+  const ident = quoteIdent(account, "account");
+  const conn = await connect(urlFromEnv(values["url-env"] ?? "ADMIN_DATABASE_URL"));
+  try {
+    const rows = await conn.exec(`SELECT rolcanlogin, shobj_description(oid, 'pg_authid') AS comment FROM pg_roles WHERE rolname = ${quoteLiteral(account)}`);
+    if (!rows.length) throw new UsageError(`Role ${account} does not exist.`);
+    const comment = (rows[0]!.comment as string | null) ?? "";
+    if (!parseMetadata(comment) && !values.force) throw new UsageError(`${account} has no ROUA metadata. Pass --force to rotate it anyway.`);
+    if (!rows[0]!.rolcanlogin) throw new UsageError(`${account} cannot log in (revoked). Re-apply it instead of rotating.`);
+    const password = generatePassword(32);
+    const verifier = await scramSha256Verifier(password);
+    await conn.exec(`ALTER ROLE ${ident} PASSWORD ${quoteLiteral(verifier)}`);
+    if (comment && parseMetadata(comment)) {
+      const today = new Date().toISOString().slice(0, 10);
+      const updated = / rotated=\S+/.test(comment) ? comment.replace(/ rotated=\S+/, ` rotated=${today}`) : comment.replace(/ purpose=/, ` rotated=${today} purpose=`);
+      await conn.exec(`COMMENT ON ROLE ${ident} IS ${quoteLiteral(updated)}`);
+    }
+    if (values["end-sessions"]) {
+      await conn.exec(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = ${quoteLiteral(account)}`);
+    }
+    if (values["secret-out"]) {
+      writeFileSync(values["secret-out"], password + "\n", { mode: 0o600 });
+      io.out(`Rotated ${account}. The new password is in ${values["secret-out"]} (owner-only). Move it to a password manager, then delete the file.`);
+    } else {
+      io.out(`Rotated ${account}. New password (shown once, store it in a password manager now):\n\n  ${password}\n`);
+    }
+    io.out(values["end-sessions"] ? "Open sessions were ended." : "Open sessions keep working until they disconnect; pass --end-sessions to end them now.");
     return 0;
   } finally {
     await conn.close();

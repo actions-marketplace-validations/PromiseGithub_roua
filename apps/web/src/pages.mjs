@@ -331,6 +331,81 @@ gcloud iam service-accounts keys create key.json …`,
   },
 ];
 
+const row = (cells) => `<tr>${cells.map((c, i) => (i === 0 ? `<th scope="row">${c}</th>` : `<td>${c}</td>`)).join("")}</tr>`;
+
+PAGES.push(
+  {
+    path: "compare/",
+    engine: "",
+    title: "ROUA vs built-in read-only roles (pg_read_all_data, db_datareader, read…) | ROUA",
+    description:
+      "Why built-in read roles such as pg_read_all_data, GRANT SELECT ON db.*, db_datareader, SELECT ANY TABLE and MongoDB's read role are broader than they look, and what a ROUA does differently.",
+    eyebrow: "Comparison",
+    h1: "Built-in read roles are broader than they look.",
+    lede: "Every database ships a quick way to make a reader. Each one reads more than intended, keeps reading as the schema grows, and never switches itself off. Here is exactly how, per database.",
+    section: `<section class="band pagebody"><div class="wrap">
+<div class="tablewrap"><table>
+<thead><tr><th scope="col">Built-in shortcut</th><th scope="col">What it really allows</th><th scope="col">What a ROUA does instead</th></tr></thead>
+<tbody>
+${row(["PostgreSQL <code>pg_read_all_data</code>", "Every table and view in every schema, including tables created later and every secret column. Columns cannot be excluded.", "SELECT per table, or per visible column, as tables exist today. Secret columns hidden."])}
+${row(["PostgreSQL <code>GRANT SELECT ON ALL TABLES</code> + default privileges", "Default privileges make future tables readable automatically. Inherited roles, owned objects and SECURITY DEFINER functions are not checked.", "No default privileges. The audit follows every role the account can reach and every object it owns."])}
+${row(["MySQL / MariaDB <code>GRANT SELECT ON db.*</code>", "Every current and future table in the database, every column.", "Per-table and per-column grants computed when setup runs; nothing database-wide."])}
+${row(["SQL Server <code>db_datareader</code>", "Every table and view, now and later, every column. Nothing stops another role membership from adding writes.", "Per-object SELECT, secret columns left out, and DENY on every write and DDL permission, which wins over any role added later."])}
+${row(["Oracle <code>SELECT ANY TABLE</code> / <code>READ ANY TABLE</code>", "Every schema, now and later. SELECT also allows LOCK TABLE and SELECT … FOR UPDATE.", "READ per table (no locks), never ANY privileges."])}
+${row(["MongoDB <code>read</code> / <code>readAnyDatabase</code>", "Every collection in the database (or every database), including future ones.", "A custom role with find on named collections only."])}
+${row(["Redis <code>+@read ~*</code>", "Every key, plus KEYS, which can stall the server.", "Read commands on chosen key patterns only, no dangerous, admin, scripting or pub/sub commands."])}
+${row(["Snowflake <code>FUTURE</code> grants", "New tables become readable automatically; new users default to all secondary roles.", "Point-in-time grants and DEFAULT_SECONDARY_ROLES = ()."])}
+${row(["BigQuery project-level <code>dataViewer</code>", "Every dataset in the project, now and later, through a key file that never expires.", "Table-level grants and query rights that end through an IAM condition."])}
+</tbody></table></div>
+<h2>What no built-in role gives you</h2>
+<ul class="does">
+<li><b>An owner and a purpose</b>, recorded on the account itself.</li>
+<li><b>An expiry</b> that the database (or a scheduled job) enforces.</li>
+<li><b>One-step revoke</b> that also ends open sessions.</li>
+<li><b>Proof:</b> an audit with stable check IDs you can run in CI, before handover and on a schedule.</li>
+</ul>
+<p class="cta"><a class="btn primary" href="#check">Audit the read-only account you already have</a></p>
+</div></section>`,
+  },
+  {
+    path: "threat-model/",
+    engine: "",
+    title: "ROUA threat model: what read-only accounts do and do not protect | ROUA",
+    description:
+      "What a ROUA protects against (writes, privilege escalation, secret columns, forgotten accounts) and what it does not (exfiltration of readable data, resource use, badly named secrets), with per-database limits.",
+    eyebrow: "Threat model",
+    h1: "What a read-only account protects, and what it can’t.",
+    lede: "ROUA is honest about its limits. Read-only stops changes; it does not make data safe to show anyone. Here is where the line is.",
+    section: `<section class="band pagebody"><div class="wrap narrowtext">
+<h2>Protects against</h2>
+<ul class="does">
+<li><b>Any write or schema change</b>, including through inherited roles, owned objects, callable procedures and default grants.</li>
+<li><b>Privilege escalation</b> through role membership, impersonation, proxies or definer-rights code.</li>
+<li><b>Reading secret-looking columns</b> (passwords, tokens, keys, MFA seeds) by name, plus anything you list.</li>
+<li><b>Forgotten accounts</b>: every ROUA has an owner and an enforced expiry, and revoke ends open sessions.</li>
+<li><b>Drift</b>: the audit can run in CI and on a schedule, so a grant added later is noticed.</li>
+</ul>
+<h2>Does not protect against</h2>
+<ul class="misses">
+<li><b>Exfiltration of what it can read.</b> Anything the account can read, its holder can copy. Scope it, exclude tables, and on PostgreSQL use masking (L4).</li>
+<li><b>Resource use within its limits.</b> Timeouts and connection caps reduce it; the G checks report missing limits.</li>
+<li><b>Secrets in badly named columns.</b> The detector reads names. The opt-in value sampling (<code>--sample-values</code>) catches common formats, but it is a heuristic.</li>
+<li><b>Administrators.</b> Anyone who can grant privileges can widen the account later. Re-run the audit.</li>
+</ul>
+<h2>Per-database limits</h2>
+<ul>
+<li><b>MariaDB:</b> SELECT alone allows locking reads (SELECT … FOR UPDATE). Expiry needs the event scheduler, which ships off.</li>
+<li><b>SQL Server:</b> locking hints need only SELECT. Expiry needs SQL Server Agent.</li>
+<li><b>Oracle:</b> no column-level read grants, so tables with secrets are skipped; the plaintext password is in the setup script.</li>
+<li><b>MongoDB:</b> fields cannot be hidden by privilege; no built-in expiry, so the revoke must be scheduled (templates are generated).</li>
+<li><b>Redis:</b> no built-in expiry; key patterns apply across logical databases.</li>
+<li><b>Snowflake, BigQuery:</b> preview; every reader can export what it reads.</li>
+</ul>
+<p>The full threat model, including the tool's own supply chain, is in <a href="https://github.com/PromiseGithub/roua/blob/main/docs/threat-model.md" rel="noopener">docs/threat-model.md</a>. Found a gap? <a href="https://github.com/PromiseGithub/roua/security/advisories/new" rel="noopener">Report it privately</a>.</p>
+</div></section>`,
+  },
+);
+
 export const ENGINE_PAGES = PAGES.filter((p) => p.engine);
 
 const SUPPORT = {
@@ -344,7 +419,7 @@ const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, 
 const channel = (title, text, code, link) => `<article class="card channel"><h3>${title}</h3><p>${text}</p><pre class="snippet">${esc(code)}</pre>${link ? `<p class="more">${link}</p>` : ""}</article>`;
 
 const SNIP_ACTION = [
-  "- uses: PromiseGithub/roua@v0.3.0",
+  "- uses: PromiseGithub/roua@v0.4.0",
   "  env:",
   "    ADMIN_DATABASE_URL: $" + "{{ secrets.ADMIN_DATABASE_URL }}",
   "  with:",

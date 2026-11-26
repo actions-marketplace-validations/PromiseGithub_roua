@@ -117,6 +117,46 @@ describe("roua CLI", () => {
     expect((await db.query("SELECT 1 FROM pg_roles WHERE rolname = 'roua_agent_cli'")).rows).toHaveLength(0);
   });
 
+  it("audit writes SARIF and JUnit, and samples values only when asked", async () => {
+    await db.exec(`CREATE TABLE public.settings (id int, blob text);
+      INSERT INTO public.settings VALUES (1, '{"stripe": "sk_live_abcdefghijklmnop1234"}');
+      GRANT SELECT ON public.settings TO readonly;`);
+    const dir = mkdtempSync(join(tmpdir(), "roua-out-"));
+    const t = io();
+    await main(["audit", "--role", "readonly", "--json", "--sarif-out", join(dir, "r.sarif"), "--junit-out", join(dir, "r.xml")], t.io);
+    const sarif = JSON.parse(readFileSync(join(dir, "r.sarif"), "utf8"));
+    expect(sarif.version).toBe("2.1.0");
+    expect(sarif.runs[0].results.some((r: { ruleId: string; level: string }) => r.ruleId === "T1" && r.level === "error")).toBe(true);
+    const junit = readFileSync(join(dir, "r.xml"), "utf8");
+    expect(junit).toMatch(/<testsuite name="ROUA audit: readonly"[^>]*failures="[1-9]/);
+    expect(JSON.parse(t.out.join("")).results.some((r: { id: string }) => r.id === "X2")).toBe(false);
+
+    const s = io();
+    await main(["audit", "--role", "readonly", "--json", "--sample-values", "5"], s.io);
+    const x2 = JSON.parse(s.out.join("")).results.find((r: { id: string }) => r.id === "X2");
+    expect(x2.severity).toBe("warn");
+    expect(x2.details.join()).toContain("public.settings.blob: Stripe secret key");
+    expect(s.out.join()).not.toContain("sk_live_abcdefghijklmnop1234");
+    expect(await main(["audit", "--role", "readonly", "--sample-values", "9999"], io().io)).toBe(2);
+  });
+
+  it("rotate gives a ROUA account a new password and refuses others", async () => {
+    await db.exec(`CREATE ROLE roua_rot_test LOGIN PASSWORD 'old';
+      COMMENT ON ROLE roua_rot_test IS 'ROUA/0.1 profile=agent level=L2 owner=a@b.c created=2026-01-01 expires=2027-01-01T00:00:00.000Z purpose="t"';`);
+    const before = (await db.query<{ p: string }>("SELECT rolpassword AS p FROM pg_authid WHERE rolname = 'roua_rot_test'")).rows[0]!.p;
+    const dir = mkdtempSync(join(tmpdir(), "roua-rot-"));
+    const t = io();
+    expect(await main(["rotate", "roua_rot_test", "--secret-out", join(dir, "pw")], t.io)).toBe(0);
+    const after = (await db.query<{ p: string }>("SELECT rolpassword AS p FROM pg_authid WHERE rolname = 'roua_rot_test'")).rows[0]!.p;
+    expect(after).not.toBe(before);
+    expect(after).toMatch(/^SCRAM-SHA-256\$4096:/);
+    expect(readFileSync(join(dir, "pw"), "utf8").trim()).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(t.out.join()).not.toContain(readFileSync(join(dir, "pw"), "utf8").trim());
+    const comment = (await db.query<{ c: string }>("SELECT shobj_description(oid, 'pg_authid') AS c FROM pg_roles WHERE rolname = 'roua_rot_test'")).rows[0]!.c;
+    expect(comment).toMatch(/ rotated=\d{4}-\d{2}-\d{2} purpose=/);
+    expect(await main(["rotate", "readonly"], io().io)).toBe(2);
+  });
+
   it("rejects an invalid config with a clear message", async () => {
     const dir = mkdtempSync(join(tmpdir(), "roua-cli-"));
     const file = join(dir, "roua.yaml");

@@ -99,4 +99,11 @@ jobs:
           roles: sloppy
           fail-on: never
           cli-path: packages/cli/dist/bin.js
+          sarif-file: roua.sarif
+          junit-file: roua-junit.xml
+          sample-values: "5"
+      - name: SARIF and JUnit were written
+        run: |
+          node -e 'const s=JSON.parse(require("fs").readFileSync("roua.sarif","utf8")); if(s.version!=="2.1.0"||!s.runs[0].results.length) process.exit(1)'
+          grep -q "<testsuite" roua-junit.xml
       - run: '[ "${{ steps.report-only.outputs.ok }}" = "false" ]'

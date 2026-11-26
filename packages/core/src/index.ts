@@ -6,6 +6,7 @@ export * from "./metadata.js";
 export * from "./postgres/plan.js";
 export * from "./postgres/audit.js";
 export * from "./postgres/verify.js";
+export { sampleSecretValues, detectSecretValue, entropy, VALUE_PATTERNS } from "./postgres/sample.js";
 export * from "./report.js";
 export * from "./yaml.js";
 export * from "./engines/index.js";

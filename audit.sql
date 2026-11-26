@@ -166,6 +166,14 @@ FROM pg_hba_file_rules
 WHERE error IS NULL AND (:'role' = ANY (user_name) OR 'all' = ANY (user_name))
 ORDER BY line_number;
 
--- C1: Session defaults
+-- C1: Read-only default and audit logging
 SELECT unnest(s.setconfig) AS setting FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
-WHERE r.rolname = :'role' AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()));
+   WHERE r.rolname = :'role' AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()));
+
+-- G1: Queries are time-limited (see the C1 query above)
+
+-- G2: Idle transactions are ended (see the C1 query above)
+
+-- G3: Lock waits are limited (see the C1 query above)
+
+-- G4: Temporary file use is limited (see the C1 query above)

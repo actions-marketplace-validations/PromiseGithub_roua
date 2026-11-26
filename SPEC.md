@@ -124,8 +124,10 @@ Request -> Approve -> Plan -> Review -> Apply -> Verify -> Hand over (once) -> U
 | Apply | **SHOULD** be one transaction. Re-applying **MUST** be idempotent and **MUST** remove privileges the definition no longer grants. |
 | Verify | **MUST** pass (§8) before credentials are handed over. **SHOULD** be repeated on a schedule, because other people's grants drift. |
 | Hand over | The password **SHOULD** be shown once and passed through a password manager or vault, never by email or chat. Scripts **SHOULD NOT** contain the plaintext password (PostgreSQL accepts a SCRAM-SHA-256 verifier instead). |
+| Rotate | Credentials **SHOULD** be rotated at least every 90 days, and never less often than the profile's maximum lifetime. Rotation **MUST** replace the credential without widening privileges, **SHOULD** record the date in the metadata (`rotated=YYYY-MM-DD`), and **SHOULD** let open sessions finish unless asked to end them. Where the engine supports two valid credentials at once (key pairs, IAM tokens, dual passwords), tools **MAY** offer an overlap window, which **MUST NOT** exceed 24 hours. |
 | Expire | Expiry **MUST** stop new logins. Where the engine cannot do this natively, a scheduled job **MUST** do it. |
 | Revoke | **MUST** disable login **and** terminate open sessions. (PostgreSQL's `VALID UNTIL` alone does neither for sessions already open.) |
+| Drop | **SHOULD** follow revoke. Dropping **MUST** remove the account's grants and anything it owns (on PostgreSQL, `DROP OWNED BY` in every database, then `DROP ROLE`), **MUST NOT** leave orphaned grants on the level role, and **SHOULD** keep the final audit report as evidence that the account existed and was removed. |
 
 ## 8. Verification
 
@@ -151,8 +153,18 @@ A conformant tool **MUST** run these checks and **MUST** exit non-zero if any ch
 | X1 | No secret-pattern column is readable | fail |
 | N1 | No USAGE on foreign servers | warn |
 | N2 | No `trust` authentication for the role from remote hosts; role-specific `pg_hba.conf` rules exist | fail / warn |
-| C1 | Statement timeout, read-only default and audit logging configured | warn |
+| C1 | Read-only session default and audit logging configured | warn |
+| G1 | Queries are time-limited (`statement_timeout` set, at most one hour) | warn |
+| G2 | Idle transactions are ended (`idle_in_transaction_session_timeout` set) | warn |
+| G3 | Lock waits are limited (`lock_timeout` set) | warn |
+| G4 | Temporary file use is limited (`temp_file_limit` set; needs superuser) | info |
 | M1 | ROUA metadata present and complete | warn |
+
+**Optional value sampling.** With the administrator's explicit opt-in, a tool **MAY** run X2: read a small sample of rows from each text column the account can read and report columns whose values match known secret formats (private keys, JSON Web Tokens, cloud and SaaS API keys, password hashes, connection strings with passwords) or long high-entropy strings. X2 **MUST** report column names only, never values, and is always a warning: like §5, it is a heuristic, not a guarantee.
+
+| ID | Check | Severity if not met |
+|---|---|---|
+| X2 | No secret-looking values in sampled readable columns | warn |
 
 **Live probes**, run while connected as the account. Each runs in a transaction that is always rolled back, after explicitly setting `transaction_read_only = off`, so a refusal proves the privilege is missing rather than the default. Write probes affect zero rows (`UPDATE … WHERE false`, `DELETE … WHERE false`, `INSERT … SELECT … WHERE false`).
 
@@ -169,6 +181,10 @@ A conformant tool **MUST** run these checks and **MUST** exit non-zero if any ch
 | V1 | Connected as the configured account |
 | V5 | Every readable object is allowed by the level and scope (for L0: nothing readable; for L4: only masked views) |
 | V7 | Sampled values of masked columns are masked as configured |
+
+V2, V3, V4 and V6 are **reserved**. They were drafted for expiry enforcement, source-address restriction, TLS and "no object becomes readable automatically", and those properties are now covered by R2, N2 and the engine profiles in §10. The identifiers will not be reused for different meanings.
+
+**Check IDs on other engines.** Each engine profile in §10 maps its checks to the same letters where the meaning carries over: R (role and account attributes), T (table and column privileges), O (ownership), F (functions and procedures), X (secrets), N (network), E (expiry), L or G (limits and resource governance), M (metadata).
 
 The machine-readable report format is [`schemas/roua-report.schema.json`](schemas/roua-report.schema.json).
 
@@ -213,6 +229,22 @@ Supported: PostgreSQL 13 and later. The reference implementation's SQL is the no
 - **Network:** restrict the account in `pg_hba.conf` (`hostssl <db> <account> <cidr> scram-sha-256`), above broader rules.
 - **Hardening that affects every role** is opt-in and printed as a warning otherwise: `REVOKE TEMPORARY ON DATABASE … FROM PUBLIC`, and on PostgreSQL 14 and older `REVOKE CREATE ON SCHEMA public FROM PUBLIC`.
 - **Revoke:** `ALTER ROLE … NOLOGIN` then `pg_terminate_backend()` for the account's sessions.
+- **Rotate:** `ALTER ROLE … PASSWORD 'SCRAM-SHA-256$…'` with a new verifier; `VALID UNTIL` and grants are unchanged.
+
+### 10.1 Other engine profiles (informative in 0.1)
+
+These profiles describe what the reference generators do, and every one marked *tested* is verified on each change against a real server (writes, DDL, secret columns, excluded tables and tables created after setup are refused; the audit passes; expiry fires; revoke cuts access). They are **informative** in 0.1 and candidates to become normative in 0.2 through [RFC 0005](rfcs/0005-engine-profiles.md). Levels other than those listed are not offered on that engine.
+
+| Engine | Levels | Read grant | Secrets | Writes | Credential | Expiry | Revoke |
+|---|---|---|---|---|---|---|---|
+| MySQL 8+ (tested) | L1, L2 | `SELECT` per table, or per visible column, computed from `information_schema` at setup; nothing database-wide | column-level grants omit secret columns | none granted; locking reads need UPDATE | `caching_sha2_password` hash | one-shot event (event scheduler) | `ACCOUNT LOCK` + `KILL` sessions |
+| MariaDB 10.6+ (tested) | L1, L2 | as MySQL | as MySQL | none granted; **SELECT alone allows locking reads** | native password hash | one-shot event (scheduler is off by default; audit E2) | as MySQL |
+| SQL Server 2017+, Azure SQL (tested) | L0, L1, L2 | `SELECT` per object, or on visible columns; L0 = `VIEW DEFINITION` on schemas, no SELECT | visible-column grants | database-wide `DENY` on every write and DDL permission | hashed login (`0x0200…`); contained users need plaintext | SQL Server Agent job | `ALTER LOGIN … DISABLE` (or `DENY CONNECT`) + `KILL` |
+| Oracle 19c+ (tested) | L1, L2 | `READ` (not `SELECT`) per table and view; never ANY privileges or schema grants | tables with secret columns are skipped (no column read grants) | none granted | plaintext in setup script | `DBMS_SCHEDULER` job | `ACCOUNT LOCK` + `KILL SESSION` |
+| MongoDB 6+ (tested) | L0, L1, L2 | custom role: `find`, `listIndexes`, `collStats` on named collections; L0 = `listCollections` and `listIndexes` only | fields cannot be hidden by privilege; use views | no insert/update/remove, so `$out`/`$merge` fail | SCRAM-SHA-256 (plaintext in setup script) | **none built in**: scheduled revoke (templates generated); audit E1 fails after expiry | roles revoked, password randomized, sessions killed |
+| Redis 6.2+/Valkey (tested) | L1 | ACL `-@all +@read +@connection` minus `@write @dangerous @admin @scripting @pubsub`, `%R~` key patterns, no channels | key patterns only | blocked by command category and read-only key permissions | SHA-256 password hash | **none built in**: scheduled revoke | `ACL SETUSER … off` + `CLIENT KILL USER` |
+| Snowflake (preview) | L0, L1, L2 | dedicated role rebuilt per run; point-in-time `SELECT` (L0: `REFERENCES`); no FUTURE grants | tables with secret columns skipped | none granted | key pair, `TYPE = SERVICE` | `DAYS_TO_EXPIRY` | `DISABLED = TRUE` |
+| BigQuery (preview) | L0, L1, L2 | `roles/bigquery.dataViewer` per table (L0: `metadataViewer` per dataset) | tables with secret columns skipped | none granted | service account, impersonation preferred over keys | IAM condition on `jobUser` | disable service account |
 
 ## 11. Conformance
 
@@ -229,6 +261,40 @@ ROUA is a vocabulary plus a verification method. It is meant to work alongside e
 - The specification uses semantic versioning. Until 1.0, minor versions may make breaking changes; each one is listed in [CHANGELOG.md](CHANGELOG.md).
 - Changes are proposed as RFCs in [`rfcs/`](rfcs/README.md), with at least 14 days of public comment.
 - New engines are added only with a tested reference implementation and integration tests on real servers.
+- **1.0 criteria:** every engine profile in §10.1 is normative and tested; rotation, drop and approval records are specified and verified by tools; a public conformance kit exists so other tools can prove conformance; and the open RFCs listed in [rfcs/README.md](rfcs/README.md) are accepted or withdrawn.
+
+## 14. Resource governance
+
+A read-only account can still hurt a production system through long scans, open transactions and lock waits. Every ROUA **SHOULD** have a statement time limit, an idle-transaction limit and a connection cap, and on warehouses that bill per query a cost cap. Tools **SHOULD** generate these where the engine supports them and **SHOULD** report missing ones (G checks on PostgreSQL).
+
+| Engine | Controls |
+|---|---|
+| PostgreSQL | `statement_timeout`, `idle_in_transaction_session_timeout`, `lock_timeout`, `temp_file_limit` (superuser), `CONNECTION LIMIT` |
+| MySQL | `MAX_USER_CONNECTIONS`, optional `MAX_QUERIES_PER_HOUR`; `max_execution_time` in the client (no per-account timeout) |
+| MariaDB | `MAX_STATEMENT_TIME`, `MAX_USER_CONNECTIONS` |
+| SQL Server | Resource Governor workload group with a classifier for ROUA logins (Enterprise and Developer editions); `query governor cost limit` |
+| Oracle | profile with `SESSIONS_PER_USER`, `CPU_PER_CALL`, `LOGICAL_READS_PER_CALL`, `IDLE_TIME`; optionally a Resource Manager consumer group |
+| MongoDB | `maxTimeMS` in clients or a proxy; connection limits at the driver or proxy |
+| Redis | `@slow`, `@dangerous`, `@admin` denied in the ACL |
+| Snowflake | dedicated small warehouse with a resource monitor (credit quota, suspend); `STATEMENT_TIMEOUT_IN_SECONDS` |
+| BigQuery | `maximumBytesBilled` on clients, custom per-user query quotas, a dedicated reservation |
+
+## 15. Query logging
+
+Auditors and incident responders need to know what an account read. A ROUA **SHOULD** have query logging enabled for its sessions, and accounts at L4 and L5 **SHOULD** treat it as required ([RFC 0004](rfcs/0004-logging-and-credentials.md) proposes making it a MUST for those levels). Engine mechanisms: PostgreSQL `pgaudit` (`pgaudit.log = 'read'` per role), MySQL Enterprise Audit or the Percona/MariaDB audit plugins, SQL Server Audit, Oracle Unified Auditing, MongoDB `auditLog` (Enterprise and Atlas), Redis `MONITOR` is not suitable (it is itself a dangerous command), Snowflake `ACCESS_HISTORY`, BigQuery Data Access audit logs.
+
+## 16. Credential classes (informative)
+
+Static passwords with long lives are the weakest part of most access setups. In order of preference for unattended use (agents, services):
+
+1. **Identity-based tokens**: Amazon RDS and Aurora IAM authentication, Google Cloud SQL IAM, Microsoft Entra ID for Azure SQL and Azure Database, with token lifetimes measured in minutes.
+2. **Dynamic credentials**: a secrets manager such as HashiCorp Vault's database secrets engine creates a short-lived user per lease. ROUA's generated SQL can serve as the creation statements, and the audit can check the users it issues.
+3. **Key pairs** where the engine supports them (Snowflake), held in a secrets manager.
+4. **Static passwords**, generated, stored only as verifiers in scripts, rotated (§7), and handed over once through a password manager.
+
+## 17. Data egress (informative)
+
+Read-only access prevents change, not disclosure: anything the account can read, its holder can copy. ROUA's controls for disclosure are the scope, exclusions, secret detection and, on PostgreSQL, masking (L4). For AI agents with broad read access, an **egress-aware proxy** between the agent and the database can add per-query row caps, per-day row or byte budgets, query logging tied to the agent's identity, and a kill switch. [RFC 0003](rfcs/0003-egress-gateway.md) proposes how a ROUA tool would describe and audit such a gateway.
 
 ## Acknowledgements
 

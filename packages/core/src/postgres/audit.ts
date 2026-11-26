@@ -13,6 +13,7 @@
 
 import { SECRET_COLUMN_REGEX, PROFILE_INFO, type Profile } from "../constants.js";
 import { quoteLiteral } from "../escape.js";
+import { sampleSecretValues } from "./sample.js";
 import { parseMetadata } from "../metadata.js";
 
 export type Severity = "pass" | "info" | "warn" | "fail" | "error";
@@ -44,6 +45,11 @@ export interface AuditOptions {
   allowColumns?: string[];
   /** Maximum rows listed per check. */
   maxDetails?: number;
+  /**
+   * Opt-in X2: read this many rows from each text column the role can read and
+   * look for secret formats (values are never reported). Off by default.
+   */
+  sampleValues?: number;
 }
 
 const SYS = (alias: string) =>
@@ -98,6 +104,28 @@ const list = (rows: Record<string, unknown>[], f: (r: Record<string, unknown>) =
   return items;
 };
 const bool = (v: unknown) => v === true || v === "t" || v === "true";
+
+/** Per-role session settings (database-specific and global). */
+const ROLE_SETTINGS_SQL = ({ role }: Ctx) =>
+  `SELECT unnest(s.setconfig) AS setting FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
+   WHERE r.rolname = ${quoteLiteral(role)} AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))`;
+
+function settingValue(rows: Record<string, unknown>[], key: string): string | null {
+  for (const r of rows) {
+    const s = String(r.setting);
+    if (s.startsWith(`${key}=`)) return s.slice(key.length + 1);
+  }
+  return null;
+}
+
+/** PostgreSQL duration ("30s", "5min", "1h", "30000") in milliseconds; 0 means unlimited. */
+export function durationMs(v: string): number {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(us|ms|s|min|h|d)?\s*$/i.exec(v);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  const unit = (m[2] ?? "ms").toLowerCase();
+  return n * ({ us: 0.001, ms: 1, s: 1000, min: 60_000, h: 3_600_000, d: 86_400_000 } as Record<string, number>)[unit]!;
+}
 
 const ROLE_SQL = (role: string) =>
   `SELECT r.oid::text AS oid, r.rolname, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,
@@ -440,18 +468,72 @@ export const CHECKS: CheckDef[] = [
   },
   {
     id: "C1",
-    title: "Session defaults",
-    sql: ({ role }) =>
-      `SELECT unnest(s.setconfig) AS setting FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
-       WHERE r.rolname = ${quoteLiteral(role)} AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))`,
+    title: "Read-only default and audit logging",
+    sql: ROLE_SETTINGS_SQL,
     evaluate: (rows) => {
       const settings = rows.map((r) => String(r.setting));
       const has = (k: string) => settings.some((s) => s.startsWith(`${k}=`));
       const details: string[] = [];
-      if (!has("statement_timeout")) details.push("No statement_timeout: a single query can run forever.");
       if (!has("default_transaction_read_only")) details.push("default_transaction_read_only is not on (a helpful default, though not a security control).");
-      if (!has("pgaudit.log")) details.push("No pgaudit.log setting for this role (no per-role audit trail).");
-      return details.length ? { severity: "warn", details, fix: "ALTER ROLE <role> SET statement_timeout = '30s'; ALTER ROLE <role> SET default_transaction_read_only = on;" } : pass();
+      if (!has("pgaudit.log")) details.push("No pgaudit.log setting for this role, so there is no per-role record of what it queried.");
+      return details.length
+        ? { severity: "warn", details, fix: "ALTER ROLE <role> SET default_transaction_read_only = on; ALTER ROLE <role> SET pgaudit.log = 'read';" }
+        : pass();
+    },
+  },
+  // Resource governance: a read-only account can still hurt production with
+  // long scans, idle transactions holding snapshots, or lock waits.
+  {
+    id: "G1",
+    title: "Queries are time-limited",
+    sql: ROLE_SETTINGS_SQL,
+    evaluate: (rows) => {
+      const v = settingValue(rows, "statement_timeout");
+      const ms = v === null ? null : durationMs(v);
+      if (!ms) return { severity: "warn", details: ["No statement_timeout: one query can run for hours."], fix: "ALTER ROLE <role> SET statement_timeout = '30s';" };
+      if (ms > 3_600_000) return { severity: "warn", details: [`statement_timeout is ${v}, more than an hour.`], fix: "ALTER ROLE <role> SET statement_timeout = '30s';" };
+      return pass(`statement_timeout = ${v}`);
+    },
+  },
+  {
+    id: "G2",
+    title: "Idle transactions are ended",
+    sql: ROLE_SETTINGS_SQL,
+    evaluate: (rows) => {
+      const v = settingValue(rows, "idle_in_transaction_session_timeout");
+      return v && durationMs(v)
+        ? pass(`idle_in_transaction_session_timeout = ${v}`)
+        : {
+            severity: "warn",
+            details: ["No idle_in_transaction_session_timeout: an abandoned transaction holds its snapshot and blocks vacuum indefinitely."],
+            fix: "ALTER ROLE <role> SET idle_in_transaction_session_timeout = '60s';",
+          };
+    },
+  },
+  {
+    id: "G3",
+    title: "Lock waits are limited",
+    sql: ROLE_SETTINGS_SQL,
+    evaluate: (rows) => {
+      const v = settingValue(rows, "lock_timeout");
+      return v && durationMs(v)
+        ? pass(`lock_timeout = ${v}`)
+        : { severity: "warn", details: ["No lock_timeout: a query waiting on a lock can queue other sessions behind it."], fix: "ALTER ROLE <role> SET lock_timeout = '5s';" };
+    },
+  },
+  {
+    id: "G4",
+    title: "Temporary file use is limited",
+    sql: ROLE_SETTINGS_SQL,
+    evaluate: (rows) => {
+      const v = settingValue(rows, "temp_file_limit");
+      return v && v !== "-1"
+        ? pass(`temp_file_limit = ${v}`)
+        : {
+            severity: "info",
+            details: ["No temp_file_limit for this role: a large sort or hash can fill the disk. Setting it needs superuser."],
+            fix: "ALTER ROLE <role> SET temp_file_limit = '1GB';",
+          };
     },
   },
   {
@@ -520,6 +602,13 @@ export async function auditRole(exec: Executor, role: string, options: AuditOpti
       });
     }
   }
+  if (opts.sampleValues) {
+    try {
+      results.push(await sampleSecretValues(exec, role, { rows: opts.sampleValues, allowColumns: opts.allowColumns }));
+    } catch (e) {
+      results.push({ id: "X2", title: "No secret-looking values in readable columns (sampled)", severity: "error", details: [`Sampling failed: ${(e as Error).message}`] });
+    }
+  }
   const summary = summarize(results);
   return { ...base, results, summary, ok: summary.fail === 0 && summary.error === 0 };
 }
@@ -542,9 +631,17 @@ export function renderAuditSql(role: string): string {
     `${ROLE_SQL(role)};`,
     "",
   ];
+  const printed = new Map<string, string>();
   for (const c of CHECKS) {
     if (!c.sql) continue;
-    parts.push(`-- ${c.id}: ${c.title}`, `${c.sql(fakeCtx).replace(/\n {7}/g, "\n")};`, "");
+    const sql = c.sql(fakeCtx).replace(/\n {7}/g, "\n");
+    const first = printed.get(sql);
+    if (first) {
+      parts.push(`-- ${c.id}: ${c.title} (see the ${first} query above)`, "");
+      continue;
+    }
+    printed.set(sql, c.id);
+    parts.push(`-- ${c.id}: ${c.title}`, `${sql};`, "");
   }
   return parts.join("\n");
 }

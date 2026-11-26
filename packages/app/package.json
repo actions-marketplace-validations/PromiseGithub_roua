@@ -1,6 +1,6 @@
 {
   "name": "@roua-dev/app",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "ROUA-App guards: consequence-free accounts for demos, app review and AI agents",
   "license": "Apache-2.0",
   "author": "Promise Okoroji (https://github.com/PromiseGithub)",
