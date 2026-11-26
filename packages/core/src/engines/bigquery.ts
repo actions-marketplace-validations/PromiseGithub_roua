@@ -69,6 +69,9 @@ DO
     SET skipped = ARRAY_CONCAT(skipped, [CONCAT(t.table_schema, '.', t.table_name)]);
   END IF;
 END FOR;
+IF granted = 0 THEN
+  RAISE USING MESSAGE = 'ROUA: the scope matched no readable tables, so the account can read nothing. Check the project, datasets and listed tables (run discover.sql to see what exists).';
+END IF;
 SELECT granted AS tables_granted, skipped AS skipped_hidden_columns;
 `;
 

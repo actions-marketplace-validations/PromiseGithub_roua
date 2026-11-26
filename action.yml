@@ -37,7 +37,7 @@ inputs:
   cli-version:
     description: Version of @roua-dev/cli to run.
     required: false
-    default: "0.4.0"
+    default: "0.5.0"
   cli-path:
     description: Run a local build of the CLI (path to bin.js) instead of the npm package. For testing this action.
     required: false

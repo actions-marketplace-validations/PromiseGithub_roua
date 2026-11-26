@@ -92,8 +92,32 @@ BEGIN
 END $$`;
 }
 
+/** Rows for names that match nothing: a misspelled table or column is reported, not silently ignored. */
+function mismatchReport(spec: AccountSpec): string {
+  const rows: string[] = [];
+  if (spec.mode === "listed") {
+    for (const o of spec.objects ?? []) {
+      rows.push(`SELECT ${myLit(o)} AS name, 'listed table' AS what FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM information_schema.TABLES t WHERE CONCAT(t.TABLE_SCHEMA, '.', t.TABLE_NAME) REGEXP ${myLit(anyPatternRegex([o])!)})`);
+    }
+  } else {
+    for (const s of spec.schemas ?? []) {
+      rows.push(`SELECT ${myLit(s)} AS name, 'database' AS what FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ${myLit(s)})`);
+    }
+  }
+  for (const d of spec.columnsDeny ?? []) {
+    rows.push(`SELECT ${myLit(d)} AS name, 'hidden column (NOT hidden: no such column)' AS what FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS c WHERE CONCAT(c.TABLE_SCHEMA, '.', c.TABLE_NAME, '.', c.COLUMN_NAME) = ${myLit(d)})`);
+  }
+  if (!rows.length) return "";
+  return `-- Names that match nothing in this server (no rows here means every name was found).
+SELECT name AS not_found, what FROM (
+  ${rows.join("\n  UNION ALL\n  ")}
+) roua_missing;
+`;
+}
+
 export function planMySql(spec: AccountSpec, now: Date): EnginePlan {
   const c = ctx(spec);
+  const perColumn = (spec.columnGrants ?? "always") === "always";
   const { maria } = c;
   const engineName = maria ? "MariaDB" : "MySQL";
   const warnings: string[] = [];
@@ -159,6 +183,7 @@ BEGIN
   DECLARE v_table VARCHAR(64);
   DECLARE v_cols MEDIUMTEXT;
   DECLARE v_hidden INT;
+  DECLARE v_granted INT DEFAULT 0;
   DECLARE roles CURSOR FOR ${roleTable};
   DECLARE tabs CURSOR FOR
     SELECT t.TABLE_SCHEMA, t.TABLE_NAME,
@@ -188,12 +213,12 @@ BEGIN
   CLOSE roles;
   SET done = 0;
 
-  -- SELECT per table; per column where some columns are hidden.
+  -- ${perColumn ? "SELECT on the visible columns of each table: columns added later stay hidden until setup runs again." : "SELECT per table; per column where some columns are hidden."}
   OPEN tabs;
   tab_loop: LOOP
     FETCH tabs INTO v_schema, v_table, v_cols, v_hidden;
     IF done THEN LEAVE tab_loop; END IF;
-    IF v_hidden = 0 THEN
+    IF v_hidden = 0 AND ${perColumn ? "FALSE" : "TRUE"} THEN
       SET @roua_sql = CONCAT('GRANT SELECT ON \`', REPLACE(v_schema, '\`', '\`\`'), '\`.\`', REPLACE(v_table, '\`', '\`\`'), '\` TO ', QUOTE(p_user), '@', QUOTE(p_host));
     ELSEIF v_cols IS NOT NULL THEN
       SET @roua_sql = CONCAT('GRANT SELECT (', v_cols, ') ON \`', REPLACE(v_schema, '\`', '\`\`'), '\`.\`', REPLACE(v_table, '\`', '\`\`'), '\` TO ', QUOTE(p_user), '@', QUOTE(p_host));
@@ -203,15 +228,20 @@ BEGIN
     PREPARE roua_stmt FROM @roua_sql;
     EXECUTE roua_stmt;
     DEALLOCATE PREPARE roua_stmt;
+    SET v_granted = v_granted + 1;
   END LOOP;
   CLOSE tabs;
+  IF v_granted = 0 THEN
+    -- MySQL limits MESSAGE_TEXT to 128 characters.
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'ROUA: the scope matched no readable tables, so the account can read nothing. Check the scope.';
+  END IF;
 END $$
 
 ${revokeProcedure()}
 DELIMITER ;
 
 -- 3. Grant read access as computed above, then remove the helper.
-CALL roua_admin.roua_setup_tmp(${myLit(spec.name)}, ${myLit(c.host)});
+${mismatchReport(spec)}CALL roua_admin.roua_setup_tmp(${myLit(spec.name)}, ${myLit(c.host)});
 DROP PROCEDURE roua_admin.roua_setup_tmp;
 
 -- 4. Expiry: lock the account and end its sessions at ${new Date(spec.expiresAt).toISOString()}.

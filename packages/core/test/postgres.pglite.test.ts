@@ -193,6 +193,44 @@ describe("L2 operational account", () => {
     await apply(config());
     expect((await auditRole(exec, "roua_agent_test")).ok).toBe(true);
   });
+
+  it("keeps a column added to a readable table hidden (per-column grants by default)", async () => {
+    await db.exec("ALTER TABLE public.products ADD COLUMN supplier_notes text");
+    await asRole("roua_agent_test", async () => {
+      expect(await errorCode("SELECT name, price FROM public.products")).toBeNull();
+      expect(await errorCode("SELECT supplier_notes FROM public.products")).toBe("42501");
+    });
+    // With column_grants: when_needed, a fully visible table gets a whole-table grant instead.
+    await apply(config({}, { exclude: ["public.salaries", "public.api_keys"], columns_deny: ["public.users.national_id"], column_grants: "when_needed" }));
+    await asRole("roua_agent_test", async () => {
+      expect(await errorCode("SELECT supplier_notes FROM public.products")).toBeNull();
+    });
+    await db.exec("ALTER TABLE public.products DROP COLUMN supplier_notes");
+    await apply(config());
+  });
+});
+
+describe("schema mismatches are caught, not ignored", () => {
+  it("refuses a scope that matches nothing, and changes nothing", async () => {
+    const cfg = config({ name: "roua_empty_test" }, { include: ["public.does_not_exist"] });
+    await expect(apply(cfg)).rejects.toThrow(/matched no readable tables/);
+    // psql would disconnect here; PGlite keeps the session, so end the aborted transaction.
+    await db.exec("ROLLBACK");
+    expect((await db.query("SELECT 1 FROM pg_roles WHERE rolname = 'roua_empty_test'")).rows).toHaveLength(0);
+  });
+
+  it("warns about listed names and hidden columns that do not exist", async () => {
+    const warnings: string[] = [];
+    const verifier = await scramSha256Verifier("TestPassword123TestPassword123ab");
+    const cfg = config({ name: "roua_typo_test", level: "L1", profile: "demo" }, {
+      public_objects: ["public.products", "public.prodcts"],
+      columns_deny: ["public.products.prise"],
+    });
+    const plan = planPostgres(validateConfig(cfg, { now: NOW }).config!, { now: NOW, secret: { kind: "scram", verifier } });
+    await db.exec(plan.setupSql, { onNotice: (n) => warnings.push(n.message ?? "") });
+    expect(warnings.join("\n")).toMatch(/public\.prodcts matches no table or view/);
+    expect(warnings.join("\n")).toMatch(/hidden column public\.products\.prise does not exist/);
+  });
 });
 
 describe("auditing an existing, careless 'readonly' user", () => {

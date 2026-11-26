@@ -180,3 +180,15 @@ details p { color: var(--muted); margin: 0 0 14px; }
 .card.fb { text-decoration: none; color: var(--ink); background: var(--panel); transition: border-color 0.15s; }
 .card.fb:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .card.fb h3 { font-size: 16.5px; }
+#schemaSet .snippet { max-height: 220px; }
+#tablePicker { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; background: var(--panel); }
+.schemaGroup summary { padding: 4px 0; cursor: pointer; }
+ul.tables { list-style: none; padding: 0 0 0 6px; margin: 0; columns: 2 220px; }
+ul.tables li { break-inside: avoid; }
+ul.tables label.check { margin: 0 0 4px; font-size: 13.5px; }
+#previewBox { font-size: 13.5px; }
+#previewBox h3 { font-size: 14.5px; margin: 6px 0; }
+#previewBox .errors { margin: 6px 0; }
+#previewBox .warn { color: var(--warn); margin: 6px 0; }
+#previewBox ul { margin: 2px 0 6px; padding-left: 18px; }
+.bad { color: var(--bad); }

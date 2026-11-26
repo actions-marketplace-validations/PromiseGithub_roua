@@ -50,6 +50,8 @@ export interface RouaConfig {
     columns_deny?: string[];
     columns_allow?: string[];
     mask?: Record<string, MaskFunction>;
+    /** "always" (default): grant per column, so columns added later stay hidden. "when_needed": whole-table grants when nothing is hidden. */
+    column_grants?: "always" | "when_needed";
   };
   hardening?: {
     revoke_temp_from_public?: boolean;
@@ -77,7 +79,7 @@ const ALLOWED_KEYS: Record<string, string[]> = {
   "account.limits": ["max_connections", "statement_timeout_s"],
   "account.network": ["allowed_sources"],
   target: ["engine", "database", "schemas", "object_owner"],
-  scope: ["include", "exclude", "public_objects", "analytics_views", "columns_deny", "columns_allow", "mask"],
+  scope: ["include", "exclude", "public_objects", "analytics_views", "columns_deny", "columns_allow", "mask", "column_grants"],
   hardening: ["revoke_temp_from_public", "revoke_public_schema_create"],
   auth: ["method", "password_env"],
 };
@@ -223,6 +225,9 @@ export function validateConfig(input: unknown, opts: ValidateOptions = {}): Vali
             errors.push(`scope.${key}: ${(e as Error).message}`);
           }
         }
+      }
+      if (s.column_grants !== undefined && s.column_grants !== "always" && s.column_grants !== "when_needed") {
+        errors.push('scope.column_grants must be "always" or "when_needed".');
       }
       for (const key of ["columns_deny", "columns_allow"] as const) {
         for (const c of stringList(s[key], `scope.${key}`, errors)) {

@@ -10,3 +10,5 @@ export { sampleSecretValues, detectSecretValue, entropy, VALUE_PATTERNS } from "
 export * from "./report.js";
 export * from "./yaml.js";
 export * from "./engines/index.js";
+export * from "./schema/snapshot.js";
+export * from "./schema/discovery.js";

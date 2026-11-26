@@ -20,6 +20,9 @@ import {
   scramSha256Verifier,
   validateConfig,
   validateSpec,
+  discoveryScript,
+  scopeFromPostgresConfig,
+  scopeFromSpec,
   type AccountSpec,
   type Engine,
   type Level,
@@ -29,8 +32,9 @@ import {
 } from "@roua-dev/core";
 import { formToConfig, splitList, type FormValues } from "./form.js";
 import { ENGINE_DEFAULTS } from "./defaults.js";
+import { currentPreview, currentSnapshot, initSchemaUi, refreshSchemaUi, render as renderSchema } from "./schema-ui.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -82,6 +86,33 @@ function init() {
   $("copyPw").addEventListener("click", () => copy($("password").value, $("copyPw")));
   $("genKey").addEventListener("click", () => void generateKeyPair());
   $("dlKey").addEventListener("click", () => download(`${$("name").value || "roua"}_rsa_key.p8`, privateKeyPem));
+  initSchemaUi({
+    engine: () => engine,
+    request: () => {
+      try {
+        return engine === "postgresql" ? scopeFromPostgresConfig(formToConfig(pgValues()).config) : scopeFromSpec(otherSpec());
+      } catch {
+        return null;
+      }
+    },
+    target: () => {
+      if (engine === "redis") return null;
+      if (engine === "postgresql") {
+        const l = $<HTMLSelectElement>("level").value;
+        return l === "L0" ? null : l === "L1" ? { field: "publicObjects", kind: "include" } : l === "L3" ? { field: "analyticsViews", kind: "include" } : { field: "exclude", kind: "exclude" };
+      }
+      return $<HTMLSelectElement>("mode").value === "listed" ? { field: "objects", kind: "include" } : { field: "exclude", kind: "exclude" };
+    },
+    context: () => ({ database: $("database").value.trim() || undefined, schemas: splitList($("schemas").value) }),
+    changed: () => refresh(),
+  });
+  // Keep the preview in step with the form.
+  let previewTimer: ReturnType<typeof setTimeout> | undefined;
+  $("form").addEventListener("input", (e) => {
+    if ((e.target as HTMLElement).closest("#schemaSet")) return;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => currentSnapshot() && renderSchema(), 250);
+  });
   $("form").addEventListener("submit", (e) => {
     e.preventDefault();
     void generate();
@@ -148,6 +179,7 @@ function selectEngine(id: Engine, resetFields: boolean) {
   $("errors").hidden = true;
   $("empty").hidden = false;
   refresh();
+  refreshSchemaUi(true);
 }
 
 function setDefaultExpiry() {
@@ -227,6 +259,7 @@ function refresh() {
   $("expiryHelp").textContent =
     pg && l === "L5" ? "L5 accounts must expire within 24 hours and need two approvers." : `The ${p} profile allows at most ${PROFILE_INFO[p].maxExpiryDays} days.`;
   $("dbLegend").textContent = info.name;
+  refreshSchemaUi(false);
 }
 
 // ------------------------------------------------------------------ generate
@@ -315,7 +348,12 @@ function showErrors(list: string[]) {
 async function generate() {
   $("errors").hidden = true;
   const now = new Date();
-  let warnings: string[] = [];
+  // With a loaded schema, refuse a scope that would read nothing or name a missing schema.
+  const preview = currentPreview();
+  if (preview?.errors.length) {
+    return showErrors([...preview.errors, "The preview in \"Your schema\" shows what matches. Fix the scope, or clear the loaded schema if it is out of date."]);
+  }
+  let warnings: string[] = preview ? [...preview.warnings] : [];
   let manualSteps: string[] = [];
   if (engine === "postgresql") {
     const { config, errors } = formToConfig(pgValues());
@@ -339,8 +377,10 @@ async function generate() {
         content: configToYaml(yamlConfig, "ROUA 0.1 account definition. Never put a password in this file.\nUse with the roua CLI: roua plan / roua apply / roua verify"),
       },
     ];
-    warnings = [...v.warnings, ...plan.warnings];
+    warnings = [...warnings, ...v.warnings, ...plan.warnings];
     manualSteps = plan.manualSteps;
+    const discover = discoveryScript("postgresql");
+    if (discover) files.push(discover);
   } else {
     const spec = otherSpec();
     const v = validateSpec(spec, now);
@@ -348,7 +388,7 @@ async function generate() {
     try {
       const plan = planEngine(spec, now);
       files = plan.files;
-      warnings = [...plan.validationWarnings, ...plan.warnings];
+      warnings = [...warnings, ...plan.validationWarnings, ...plan.warnings];
       manualSteps = plan.manualSteps;
     } catch (e) {
       return showErrors([e instanceof RouaInputError ? e.message : String(e)]);

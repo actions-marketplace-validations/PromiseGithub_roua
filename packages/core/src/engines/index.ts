@@ -1,4 +1,5 @@
 import { RouaInputError } from "../escape.js";
+import { discoveryScript } from "../schema/discovery.js";
 import { auditBigQuery, bqServiceAccountId, planBigQuery } from "./bigquery.js";
 import { validateSpec } from "./common.js";
 import { auditMongo, planMongo } from "./mongodb.js";
@@ -20,6 +21,9 @@ export function planEngine(spec: AccountSpec, now: Date = new Date()): EnginePla
   const v = validateSpec(spec, now);
   if (v.errors.length) throw new RouaInputError(v.errors.join("\n"));
   const plan = PLANNERS[spec.engine](spec, now);
+  // Ship the read-only discovery script too, so the scope can be checked against the real schema.
+  const discover = discoveryScript(spec.engine, { database: spec.database, datasets: spec.schemas, project: spec.database });
+  if (discover) plan.files.push(discover);
   return { ...plan, validationWarnings: v.warnings };
 }
 

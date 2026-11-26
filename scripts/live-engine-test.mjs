@@ -119,6 +119,10 @@ const E = {
     if (!maria) expectDenied("SELECT ... FOR UPDATE (row locks)", asUser("START TRANSACTION; SELECT name FROM app.customers FOR UPDATE"));
     expectDenied("LOCK TABLES", asUser("LOCK TABLES app.customers READ"));
     expectDenied("SELECT INTO OUTFILE", asUser("SELECT name INTO OUTFILE '/tmp/x' FROM app.customers"));
+    // Per-column grants: a column added after setup stays hidden.
+    admin("ALTER TABLE app.customers ADD COLUMN later_notes VARCHAR(20);");
+    expectDenied("column added after setup", asUser("SELECT later_notes FROM app.customers"));
+    expectAllowed("existing columns still readable", asUser("SELECT name FROM app.customers"));
     const audit = admin(file(plan, "audit"));
     check("audit has no FAIL", audit.ok && !/\|\s*FAIL\s*\|/.test(audit.out), audit.out);
     console.log(audit.out);
@@ -133,6 +137,12 @@ const E = {
     expectAllowed("login after re-setup", asUser("SELECT 1"));
     check("revoke", admin(file(plan, "revoke")).ok);
     expectDenied("login after revoke", asUser("SELECT 1"));
+    const empty = planEngine(spec({ name: "roua_ci_empty", schemas: ["no_such_db"], columnsDeny: [] }), new Date());
+    const e = admin(file(empty, "setup"));
+    check("empty scope is refused", !e.ok && /matched no readable tables/.test(e.out), e.out);
+    const typo = planEngine(spec({ name: "roua_ci_typo", mode: "listed", objects: ["app.customers", "app.custmers"], exclude: [], columnsDeny: ["app.customers.nationl_id"] }), new Date());
+    const ty = admin(file(typo, "setup"));
+    check("typos are reported", ty.ok && /app.custmers/.test(ty.out) && /nationl_id/.test(ty.out), ty.out);
   },
 
   async mariadb() {
@@ -182,6 +192,10 @@ GO`;
     expectDenied("EXEC procedure", asUser("EXEC app.bump"));
     expectDenied("CREATE TABLE", asUser("CREATE TABLE app.evil (id INT)"));
     expectDenied("SELECT INTO new table", asUser("SELECT * INTO app.evil2 FROM app.customers"));
+    // Per-column grants: a column added after setup stays hidden.
+    admin("USE appdb; ALTER TABLE app.customers ADD later_notes NVARCHAR(20);");
+    expectDenied("column added after setup", asUser("SELECT later_notes FROM app.customers"));
+    expectAllowed("existing columns still readable", asUser("SELECT name FROM app.customers"));
     // Even a role added later by mistake cannot grant writes: DENY wins.
     admin(`USE appdb; ALTER ROLE db_datawriter ADD MEMBER ${NAME};`);
     expectDenied("INSERT even as db_datawriter (DENY wins)", asUser("INSERT INTO app.customers VALUES (3, N'Eve', N'Y')"));
@@ -200,13 +214,19 @@ GO`;
     expectAllowed("login after re-setup", asUser("SELECT 1"));
     check("revoke", adminFile("revoke.sql", file(plan, "revoke")).ok);
     expectDenied("login after revoke", asUser("SELECT 1"));
+    const empty = planEngine(spec({ name: "roua_ci_empty", schemas: ["no_such_schema"], columnsDeny: [] }), new Date());
+    const e = adminFile("setup-empty.sql", file(empty, "setup"));
+    check("empty scope is refused", !e.ok && /matched no readable tables/.test(e.out), e.out);
+    const typo = planEngine(spec({ name: "roua_ci_typo", mode: "listed", objects: ["app.customers", "app.custmers"], exclude: [], columnsDeny: ["app.customers.nationl_id"] }), new Date());
+    const ty = adminFile("setup-typo.sql", file(typo, "setup"));
+    check("typos are reported", ty.ok && /app.custmers matches nothing/.test(ty.out) && /nationl_id does not exist/.test(ty.out), ty.out);
     // Structure only (L0): the catalog is visible, rows are not.
     const META = "roua_ci_meta";
     const asMeta = (sql) => docker(["exec", cid, sqlcmd, "-S", "localhost", "-U", META, "-P", PW, "-C", "-b", "-d", "appdb", "-h", "-1", "-Q", sql]);
     const meta = planEngine(spec({ name: META, mode: "metadata", exclude: [], columnsDeny: [] }), new Date());
     const m = adminFile("setup-meta.sql", file(meta, "setup"));
     check("L0 setup", m.ok, m.out);
-    const cols = asMeta("SET NOCOUNT ON; SELECT CASE WHEN COUNT(*) = 3 THEN 'META_OK' ELSE 'META_MISSING' END FROM sys.columns WHERE object_id = OBJECT_ID('app.customers')");
+    const cols = asMeta("SET NOCOUNT ON; SELECT CASE WHEN COUNT(*) >= 3 THEN 'META_OK' ELSE 'META_MISSING' END FROM sys.columns WHERE object_id = OBJECT_ID('app.customers')");
     check("L0: column metadata of app.customers is visible", cols.ok && cols.out.includes("META_OK"), cols.out);
     expectDenied("L0: SELECT name FROM app.customers", asMeta("SELECT name FROM app.customers"));
     expectDenied("L0: INSERT", asMeta("INSERT INTO app.customers VALUES (9, N'x', N'y')"));
@@ -262,6 +282,12 @@ COMMIT;
     expectAllowed("login after re-setup", asUser("SELECT 1 FROM dual;"));
     check("revoke", adminFile("revoke.sql", file(plan, "revoke")).ok);
     expectDenied("login after revoke", asUser("SELECT 1 FROM dual;"));
+    const empty = planEngine(spec({ name: "roua_ci_empty", schemas: ["NO_SUCH_SCHEMA"], columnsDeny: [] }), new Date());
+    const e = adminFile("setup-empty.sql", file(empty, "setup"));
+    check("empty scope is refused", !e.ok && /ORA-20001/.test(e.out) && /matched no readable tables/.test(e.out), e.out);
+    const typo = planEngine(spec({ name: "roua_ci_typo", mode: "listed", objects: ["APP.ORDERS", "APP.ORDRS"], exclude: [], columnsDeny: ["APP.ORDERS.AMOUNTT"] }), new Date());
+    const ty = adminFile("setup-typo.sql", file(typo, "setup"));
+    check("typos are reported", ty.ok && /APP.ORDRS matches nothing/.test(ty.out) && /APP.ORDERS.AMOUNTT does not exist/.test(ty.out), ty.out);
   },
 
   async mongodb() {
@@ -294,6 +320,13 @@ COMMIT;
     console.log(audit.out);
     check("revoke", adminFile("revoke.js", file(plan, "revoke")).ok);
     expectDenied("login after revoke", asUser(`db.customers.findOne()`));
+    // Schema mismatches: an empty scope is refused before anything is created; typos are reported.
+    const empty = planEngine(spec({ name: "roua_ci_empty", database: "no_such_db" }), new Date());
+    const e = adminFile("setup-empty.js", file(empty, "setup"));
+    check("empty scope is refused", !e.ok && /matched no collections/.test(e.out), e.out);
+    const typo = planEngine(spec({ name: "roua_ci_typo", mode: "listed", objects: ["customers", "custmers"], exclude: [] }), new Date());
+    const ty = adminFile("setup-typo.js", file(typo, "setup"));
+    check("listed typo is reported", ty.ok && /custmers.*matches nothing/.test(ty.out), ty.out);
     // Structure only (L0): collection names and indexes, no documents.
     const META = "roua_ci_meta";
     const asMeta = (js) => docker(["exec", cid, "mongosh", "--quiet", `mongodb://${META}:${PW}@localhost/appdb?authSource=admin`, "--eval", js]);

@@ -35,6 +35,28 @@ function objectFilter(spec: AccountSpec): string {
   return parts.join("\n         AND ");
 }
 
+/** PL/SQL lines that print names matching nothing, so typos are reported. */
+function mismatchReport(spec: AccountSpec): string {
+  const lines: string[] = [];
+  if (spec.mode === "listed") {
+    for (const p of spec.objects ?? []) {
+      lines.push(`  SELECT COUNT(*) INTO n FROM dba_objects WHERE object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW') AND REGEXP_LIKE(owner || '.' || object_name, ${oraLit(anyPatternRegex([p])!)}, 'i');
+  IF n = 0 THEN DBMS_OUTPUT.PUT_LINE('ROUA WARNING: listed table ' || ${oraLit(p)} || ' matches nothing: check the spelling.'); END IF;`);
+    }
+  } else {
+    for (const s of spec.schemas ?? []) {
+      lines.push(`  SELECT COUNT(*) INTO n FROM dba_users WHERE username = ${oraLit(up(s))};
+  IF n = 0 THEN DBMS_OUTPUT.PUT_LINE('ROUA WARNING: schema ' || ${oraLit(up(s))} || ' does not exist.'); END IF;`);
+    }
+  }
+  for (const d of spec.columnsDeny ?? []) {
+    const ref = splitColumn(d).map(up).join(".");
+    lines.push(`  SELECT COUNT(*) INTO n FROM dba_tab_columns WHERE owner || '.' || table_name || '.' || column_name = ${oraLit(ref)};
+  IF n = 0 THEN DBMS_OUTPUT.PUT_LINE('ROUA WARNING: hidden column ' || ${oraLit(ref)} || ' does not exist (if it is spelled differently, it is NOT hidden).'); END IF;`);
+  }
+  return lines.length ? `  -- Report names that match nothing.\n${lines.join("\n")}\n` : "";
+}
+
 function lockAndKill(user: string): string {
   return `EXECUTE IMMEDIATE 'ALTER USER ${user} ACCOUNT LOCK';
   FOR s IN (SELECT sid, serial# AS ser FROM v$session WHERE username = '${user}') LOOP
@@ -123,8 +145,9 @@ END;
 -- 3. READ per table and view, computed now. Tables with hidden columns are skipped.
 DECLARE
   granted NUMBER := 0;
+  n NUMBER;
 BEGIN
-  FOR t IN (
+${mismatchReport(spec)}  FOR t IN (
     SELECT o.owner, o.object_name,
            (SELECT COUNT(*) FROM dba_tab_columns c
              WHERE c.owner = o.owner AND c.table_name = o.object_name
@@ -150,6 +173,9 @@ BEGIN
     END IF;
   END LOOP;
   DBMS_OUTPUT.PUT_LINE('ROUA: READ granted on ' || granted || ' objects.');
+  IF granted = 0 THEN
+    RAISE_APPLICATION_ERROR(-20001, 'ROUA: the scope matched no readable tables, so the account can read nothing. Check the schemas, listed tables and exclusions (run discover.sql to see what exists).');
+  END IF;
 END;
 /
 

@@ -157,6 +157,39 @@ describe("roua CLI", () => {
     expect(await main(["rotate", "readonly"], io().io)).toBe(2);
   });
 
+  it("discover saves the schema and plan --check previews the scope against it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "roua-check-"));
+    const t = io();
+    expect(await main(["discover", "--out", join(dir, "schema.json")], t.io)).toBe(0);
+    const cols = JSON.parse(readFileSync(join(dir, "schema.json"), "utf8"));
+    expect(cols.some((c: { table: string; column: string }) => c.table === "users" && c.column === "password_hash")).toBe(true);
+
+    const yaml = (schemas: string, extra = "") => `roua_version: "0.1"
+account:
+  name: roua_check_test
+  profile: agent
+  level: L2
+  owner: a@example.com
+  purpose: test
+  expires_at: "${new Date(Date.now() + 10 * 86400000).toISOString()}"
+target:
+  engine: postgresql
+  database: postgres
+  schemas: [${schemas}]
+${extra}`;
+    writeFileSync(join(dir, "ok.yaml"), yaml("public", "scope:\n  columns_deny: [public.users.emial]\n"));
+    const ok = io();
+    expect(await main(["plan", "--check", "-f", join(dir, "ok.yaml")], ok.io)).toBe(0);
+    const okText = ok.out.join("\n");
+    expect(okText).toMatch(/public\.users\s+\d of \d columns; hidden: password_hash \(secret\)/);
+    expect(okText).toMatch(/WARN\s+Hidden-column entries matching no column: public\.users\.emial/);
+
+    writeFileSync(join(dir, "bad.yaml"), yaml("pubic"));
+    const bad = io();
+    expect(await main(["plan", "--check", "-f", join(dir, "bad.yaml"), "--schema", join(dir, "schema.json")], bad.io)).toBe(1);
+    expect(bad.out.join("\n")).toMatch(/ERROR\s+Not found in this database: pubic/);
+  });
+
   it("rejects an invalid config with a clear message", async () => {
     const dir = mkdtempSync(join(tmpdir(), "roua-cli-"));
     const file = join(dir, "roua.yaml");

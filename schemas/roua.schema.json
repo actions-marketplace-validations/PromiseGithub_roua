@@ -65,6 +65,7 @@
         "analytics_views": { "$ref": "#/$defs/patterns" },
         "columns_deny": { "$ref": "#/$defs/columns" },
         "columns_allow": { "$ref": "#/$defs/columns" },
+        "column_grants": { "enum": ["always", "when_needed"], "description": "always (default): grant per column, so columns added later stay hidden until setup runs again. when_needed: whole-table grants when no column is hidden." },
         "mask": {
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/columnRef" },

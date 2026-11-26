@@ -14,7 +14,7 @@ describe("roua mcp", () => {
     expect((await call(1, "initialize", { protocolVersion: "2025-06-18" })).result.protocolVersion).toBe("2025-06-18");
     expect((await call(1, "initialize", { protocolVersion: "1999-01-01" })).result.protocolVersion).toBe("2025-11-25");
     const tools = (await call(2, "tools/list")).result.tools.map((t: { name: string }) => t.name);
-    expect(tools).toEqual(["list_engines", "audit_script", "generate_account_scripts", "audit_postgres_role"]);
+    expect(tools).toEqual(["list_engines", "audit_script", "generate_account_scripts", "audit_postgres_role", "preview_scope", "discover_postgres_schema"]);
     expect(await handleMessage({ jsonrpc: "2.0", method: "notifications/initialized" }, "t")).toBeNull();
     expect((await call(3, "nope")).error.code).toBe(-32601);
   });
@@ -54,5 +54,18 @@ describe("roua mcp", () => {
     });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/Account name/);
+  });
+});
+
+describe("roua mcp: preview_scope", () => {
+  it("shows hidden columns and catches typos before anything is generated", async () => {
+    const schema = "schema,table,column\nshop,orders,id\nshop,customers,email\nshop,customers,password_hash\n";
+    const r = await tool("preview_scope", { engine: "mysql", schema, schemas: ["shop"], columns_deny: ["shop.orders.totl"] });
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).toContain("shop.customers: 1 visible, hidden password_hash (secret)");
+    expect(r.content[0].text).toMatch(/WARNING: Hidden-column entries matching no column: shop\.orders\.totl/);
+    const bad = await tool("preview_scope", { engine: "mysql", schema, schemas: ["shopp"] });
+    expect(bad.content[0].text).toMatch(/ERROR: Not found in this database: shopp/);
+    expect((await tool("preview_scope", { engine: "mysql", schema: "nonsense" })).isError).toBe(true);
   });
 });

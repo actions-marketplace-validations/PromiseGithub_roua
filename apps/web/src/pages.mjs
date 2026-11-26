@@ -419,7 +419,7 @@ const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, 
 const channel = (title, text, code, link) => `<article class="card channel"><h3>${title}</h3><p>${text}</p><pre class="snippet">${esc(code)}</pre>${link ? `<p class="more">${link}</p>` : ""}</article>`;
 
 const SNIP_ACTION = [
-  "- uses: PromiseGithub/roua@v0.4.0",
+  "- uses: PromiseGithub/roua@v0.5.0",
   "  env:",
   "    ADMIN_DATABASE_URL: $" + "{{ secrets.ADMIN_DATABASE_URL }}",
   "  with:",

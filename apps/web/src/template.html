@@ -143,6 +143,22 @@ __PAGE_SECTION__
         <label class="check" data-engines="redis"><input id="redis7" type="checkbox" checked> Redis 7 or newer / Valkey (read-only key permissions)</label>
       </fieldset>
 
+      <fieldset id="schemaSet">
+        <legend>Your schema (optional, recommended)</legend>
+        <p class="help">Not sure what your tables are called, or want to be certain nothing is missed? Run this read-only script, paste its output, and pick tables from a list. You will see exactly what the account can read before you generate anything. Nothing leaves this page.</p>
+        <details id="discoverBox"><summary>1. Get the discovery script</summary>
+          <pre class="snippet" id="discoverCode"></pre>
+          <p class="run" id="discoverRun"></p>
+          <div class="actions"><button type="button" id="copyDiscover">Copy</button><button type="button" id="dlDiscover">Download</button></div>
+        </details>
+        <label>2. Paste its output
+          <textarea id="schemaText" rows="3" spellcheck="false" placeholder='JSON from the script, or CSV / psql output with schema, table and column columns'></textarea></label>
+        <div class="actions"><button type="button" id="loadSchema">Load schema</button><button type="button" id="clearSchema" hidden>Clear</button></div>
+        <p id="schemaStatus" class="help"></p>
+        <div id="tablePicker" hidden></div>
+        <div id="previewBox" hidden></div>
+      </fieldset>
+
       <fieldset>
         <legend>Scope</legend>
         <label data-engines="postgresql" data-levels="L2 L4 L5">Include <input id="include" placeholder="public.* (default: every table in the schemas)" spellcheck="false"></label>
@@ -344,6 +360,8 @@ public.users.date_of_birth: year_only</textarea>
       <p>Yes. The page is a single file that runs entirely in your browser. Its security policy forbids every network request, so nothing you type can be sent anywhere. You can save the page and use it offline. Where the database accepts it, the scripts contain only a password hash (PostgreSQL, MySQL, MariaDB, SQL Server, Redis), never the password.</p></details>
     <details><summary>Why not just use GRANT SELECT ON *.*, db_datareader or a built-in read role?</summary>
       <p>Built-in read roles cover every table, including tables created next year, and they include tables full of secrets. They also leave whatever else the account inherited untouched. ROUA starts from nothing, grants read per table as it exists today, hides secret columns, denies writes explicitly where the database supports it, and adds an expiry.</p></details>
+    <details><summary>What if my database doesn't have the tables or columns I expect, or changes later?</summary>
+      <p>The scripts look at your real database when they run, not when they are generated. Under "Your schema", paste the output of the read-only discovery script to pick tables from a list and preview exactly what the account will read. The preview flags missing schemas, misspelled table names and hidden-column entries that match nothing, and blocks scopes that would read nothing. Setup checks again on the server: it refuses an empty scope and reports names that do not exist. Tables created later stay closed. On PostgreSQL, MySQL, MariaDB and SQL Server, grants are per column, so a column added later (even a secret one) stays hidden until you run setup again. On other databases, the audit catches secret-looking columns that became readable.</p></details>
     <details><summary>What happens when the account expires?</summary>
       <p>PostgreSQL: the password stops working (VALID UNTIL), and <code>roua expire</code> ends open sessions. MySQL and MariaDB: a scheduled event locks the account and ends its sessions. SQL Server: an Agent job disables the login. Oracle: a scheduler job locks the account. Snowflake: DAYS_TO_EXPIRY. BigQuery: query rights end through an IAM condition. MongoDB and Redis have no scheduler, so you schedule the revoke script; the audit flags it if you forget.</p></details>
     <details><summary>Does it work with managed databases?</summary>

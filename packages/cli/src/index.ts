@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
@@ -10,6 +10,13 @@ import {
   ROUA_SPEC_VERSION,
   auditRole,
   formatReport,
+  discoveryScript,
+  parseSchemaSnapshot,
+  previewScope,
+  scopeFromPostgresConfig,
+  snapshotTables,
+  type SchemaSnapshot,
+  type ScopePreview,
   toJunit,
   toSarif,
   generatePassword,
@@ -27,7 +34,7 @@ import {
 import { connect, redactUrl, urlForUser, urlFromEnv, UsageError } from "./db.js";
 import { loadConfig } from "./config-file.js";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 const HELP = `roua ${VERSION}: Read-Only User Accounts for PostgreSQL (ROUA spec ${ROUA_SPEC_VERSION}, draft)
 
@@ -37,6 +44,8 @@ Is your read-only user actually read-only?
   roua verify [-f roua.yaml]                                Verify while connected AS the account
   roua init   [--profile agent] [--level L2] [--name ...]   Write a starter roua.yaml
   roua plan   [-f roua.yaml] [--out dir]                    Print the SQL; changes nothing
+  roua plan   --check [--schema schema.json]                Show what the scope matches in the real schema
+  roua discover [--out schema.json]                         Save the schema (names and types only, no rows)
   roua apply  [-f roua.yaml] [--yes] [--secret-out file]    Create/update the account, then verify it
   roua rotate <account> [--secret-out file] [--end-sessions] Give the account a new password
   roua revoke <account> [--drop] [--yes]                    Disable login and end open sessions
@@ -92,6 +101,8 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
       }
       case "init":
         return cmdInit(rest, io);
+      case "discover":
+        return await cmdDiscover(rest, io);
       case "plan":
         return await cmdPlan(rest, io);
       case "apply":
@@ -306,9 +317,51 @@ async function secretFor(config: ReturnType<typeof loadConfig>["config"], allowG
   return { secret: { kind: "scram", verifier: await scramSha256Verifier(password) }, password, generated };
 }
 
+/** Read the live schema (names and types only) with the PostgreSQL discovery query. */
+async function liveSnapshot(urlEnv: string | undefined): Promise<SchemaSnapshot> {
+  const conn = await connect(urlFromEnv(urlEnv ?? "ADMIN_DATABASE_URL"));
+  try {
+    const sql = discoveryScript("postgresql")!.content.split("\n").filter((l) => !l.startsWith("--")).join("\n");
+    const rows = await conn.exec(sql);
+    return parseSchemaSnapshot(JSON.stringify(Object.values(rows[0] ?? {})[0] ?? []), "postgresql");
+  } finally {
+    await conn.close();
+  }
+}
+
+function printPreview(p: ScopePreview, io: Io) {
+  for (const e of p.errors) io.out(`ERROR  ${e}`);
+  for (const w of p.warnings) io.out(`WARN   ${w}`);
+  for (const n of p.notes) io.out(`NOTE   ${n}`);
+  for (const o of p.objects) {
+    const what = o.access === "all" ? "all columns" : o.access === "partial" ? `${o.visible.length} of ${o.visible.length + o.hidden.length} columns` : "skipped";
+    io.out(`  ${o.name.padEnd(40)} ${what}${o.hidden.length ? `; hidden: ${o.hidden.map((h) => `${h.column} (${h.reason})`).join(", ")}` : ""}`);
+  }
+}
+
+// ---------------------------------------------------------------- discover
+async function cmdDiscover(args: string[], io: Io): Promise<number> {
+  const { values } = parse(args, { out: { type: "string" } });
+  const snap = await liveSnapshot(values["url-env"]);
+  const json = JSON.stringify(snap.columns, null, 2);
+  if (values.out) {
+    writeFileSync(values.out, json + "\n");
+    io.out(`Wrote ${snap.columns.length} column(s) in ${snapshotTables(snap).length} table(s) and view(s) to ${values.out}. Names and types only, no rows.`);
+  } else io.out(json);
+  return 0;
+}
+
 async function cmdPlan(args: string[], io: Io): Promise<number> {
-  const { values } = parse(args, { file: { type: "string", short: "f" }, out: { type: "string" } });
+  const { values } = parse(args, { file: { type: "string", short: "f" }, out: { type: "string" }, check: { type: "boolean" }, schema: { type: "string" } });
   const { config, warnings } = loadConfig(values.file ?? "roua.yaml");
+  if (values.check) {
+    // Resolve the scope against the real schema (live, or a saved snapshot) before anything runs.
+    const snap = values.schema ? parseSchemaSnapshot(readFileSync(values.schema, "utf8"), "postgresql") : await liveSnapshot(values["url-env"]);
+    const preview = previewScope(scopeFromPostgresConfig(config), snap);
+    if (values.json) io.out(JSON.stringify(preview, null, 2));
+    else printPreview(preview, io);
+    return preview.errors.length ? 1 : 0;
+  }
   const { secret } = await secretFor(config, false);
   const plan = planPostgres(config, { now: new Date(), secret, generator: `roua ${VERSION}` });
   if (values.out) {

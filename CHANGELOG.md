@@ -2,6 +2,17 @@
 
 Notable changes to the ROUA specification and tools. The project uses semantic versioning. Before 1.0, minor versions may contain breaking changes.
 
+## 0.5.0 (2026-11-26)
+
+**Handling real schemas (SPEC §18)**
+- **Preview before you generate.** Each engine has a read-only discovery script (`discover.sql` / `discover.js`, included with every set of scripts) that lists schemas, tables and columns, never rows. kaizam.com, `roua plan --check` and the MCP `preview_scope` tool resolve the scope against that snapshot. They show which tables become readable and which columns stay hidden and why, and they flag missing schemas, misspelled listed tables, hidden-column entries that match no column, and scopes that would read nothing.
+- **Setup refuses an empty scope** on every engine instead of creating an account that reads nothing. On PostgreSQL nothing is changed.
+- **Typos are reported by setup itself:** listed tables, schemas and hidden columns that do not exist.
+- **Per-column grants by default** (`column_grants: always`) on PostgreSQL, MySQL, MariaDB and SQL Server. A column added later, possibly a secret one, stays hidden until setup runs again. Set `when_needed` for whole-table grants.
+- **kaizam.com: "Your schema".** Paste the discovery output (JSON, CSV or psql table), pick tables from a list with secret-looking columns flagged, and see a live preview. Generation is blocked when the preview finds a missing schema or an empty scope.
+- **CLI:** `roua discover` saves the schema; `roua plan --check [--schema file]` previews the scope. **MCP:** `preview_scope` and `discover_postgres_schema` tools.
+- Live CI checks on MySQL, MariaDB, SQL Server, Oracle and MongoDB that empty scopes are refused, typos are reported, and (where the engine has column grants) columns added after setup stay hidden.
+
 ## 0.4.0 (2026-11-25)
 
 **Tools**

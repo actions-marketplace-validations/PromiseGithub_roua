@@ -54,6 +54,15 @@ const collections = target.getCollectionNames()
   .filter((n) => !matches(n, ROUA.exclude))
   .sort();
 
+// Report listed names that match nothing, and refuse an account that could read nothing.
+const all = target.getCollectionNames();
+for (const p of ROUA.include ?? []) {
+  if (!all.some((n) => new RegExp(p).test(n))) print("ROUA WARNING: listed collection " + p + " matches nothing: check the spelling.");
+}
+if (!collections.length && ROUA.actions.includes("find")) {
+  throw new Error("ROUA: the scope matched no collections in " + ROUA.db + ", so the account could read nothing. Nothing was changed. Check the database name and collection names (run discover.js to see what exists).");
+}
+
 // find / listIndexes / collStats on each collection (listIndexes only for L0); listCollections on the database.
 // No insert, update, remove, createIndex, or anything else.
 const privileges = collections.map((c) => ({ resource: { db: ROUA.db, collection: c }, actions: ROUA.actions }));

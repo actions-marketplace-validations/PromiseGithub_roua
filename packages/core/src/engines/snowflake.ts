@@ -58,6 +58,7 @@ EXECUTE IMMEDIATE $$
 DECLARE
   granted INTEGER DEFAULT 0;
   skipped VARCHAR DEFAULT '';
+  no_match EXCEPTION (-20001, 'ROUA: the scope matched no readable tables, so the account can read nothing. Check the database, schemas and listed tables (run discover.sql to see what exists).');
   c1 CURSOR FOR
     SELECT t.TABLE_SCHEMA AS S, t.TABLE_NAME AS N, t.TABLE_TYPE AS K,
            (SELECT COUNT(*) FROM ${DB}.INFORMATION_SCHEMA.COLUMNS c
@@ -78,7 +79,10 @@ BEGIN
       skipped := skipped || r.S || '.' || r.N || ' ';
     END IF;
   END FOR;
-  RETURN 'SELECT granted on ' || granted || ' objects. Skipped (hidden columns): ' || skipped;
+  IF (granted = 0) THEN
+    RAISE no_match;
+  END IF;
+  RETURN 'Granted on ' || granted || ' objects. Skipped (hidden columns): ' || skipped;
 END;
 $$;
 

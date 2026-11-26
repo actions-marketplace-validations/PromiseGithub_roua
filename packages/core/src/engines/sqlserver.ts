@@ -67,7 +67,27 @@ SELECT @roua_kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';'
 EXEC sys.sp_executesql @roua_kill;`;
 }
 
+/** Names that match nothing are printed, not silently ignored. */
+function mismatchReport(spec: AccountSpec): string {
+  const lines: string[] = [];
+  const full = "s.name + N'.' + o.name";
+  if (spec.mode === "listed") {
+    for (const p of spec.objects ?? []) {
+      lines.push(`IF NOT EXISTS (SELECT 1 FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE o.type IN ('U', 'V') AND ${full} LIKE ${msLit(likePattern(p))}) PRINT N'ROUA WARNING: listed table ${p.replace(/'/g, "''")} matches nothing: check the spelling.';`);
+    }
+  } else {
+    for (const s of spec.schemas ?? []) {
+      lines.push(`IF SCHEMA_ID(${msLit(s)}) IS NULL PRINT N'ROUA WARNING: schema ${s.replace(/'/g, "''")} does not exist in this database.';`);
+    }
+  }
+  for (const d of spec.columnsDeny ?? []) {
+    lines.push(`IF NOT EXISTS (SELECT 1 FROM sys.columns c JOIN sys.objects o ON o.object_id = c.object_id JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE ${full} + N'.' + c.name = ${msLit(d)}) PRINT N'ROUA WARNING: hidden column ${d.replace(/'/g, "''")} does not exist (if it is spelled differently, it is NOT hidden).';`);
+  }
+  return lines.length ? `-- Report names that match nothing.\n${lines.join("\n")}\n` : "";
+}
+
 export function planSqlServer(spec: AccountSpec, now: Date): EnginePlan {
+  const perColumn = (spec.columnGrants ?? "always") === "always";
   const contained = !!spec.contained;
   const name = spec.name;
   const u = msIdent(name);
@@ -160,7 +180,7 @@ BEGIN
   RETURN LOWER(@out);
 END;
 GO
-DECLARE @obj nvarchar(400), @cols nvarchar(max), @hidden int, @sql nvarchar(max), @granted int = 0, @partial int = 0;
+${mismatchReport(spec)}DECLARE @obj nvarchar(400), @cols nvarchar(max), @hidden int, @sql nvarchar(max), @granted int = 0, @partial int = 0;
 DECLARE roua_objs CURSOR LOCAL FAST_FORWARD FOR
   SELECT QUOTENAME(s.name) + N'.' + QUOTENAME(o.name),
     (SELECT STRING_AGG(CAST(QUOTENAME(c.name) AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY c.column_id)
@@ -174,7 +194,8 @@ OPEN roua_objs;
 FETCH NEXT FROM roua_objs INTO @obj, @cols, @hidden;
 WHILE @@FETCH_STATUS = 0
 BEGIN
-  SET @sql = CASE WHEN @hidden = 0 THEN N'GRANT SELECT ON ' + @obj + N' TO ${u};'
+  -- ${perColumn ? "Per-column grants: columns added later stay hidden until setup runs again." : "Whole-object grants where nothing is hidden."}
+  SET @sql = CASE WHEN @hidden = 0 AND ${perColumn ? "1 = 0" : "1 = 1"} THEN N'GRANT SELECT ON ' + @obj + N' TO ${u};'
                   WHEN @cols IS NOT NULL THEN N'GRANT SELECT ON ' + @obj + N' (' + @cols + N') TO ${u};' END;
   IF @sql IS NOT NULL
   BEGIN
@@ -187,6 +208,8 @@ END
 CLOSE roua_objs;
 DEALLOCATE roua_objs;
 DROP FUNCTION dbo.roua_tmp_snake;
+IF @granted = 0
+  THROW 50001, N'ROUA: the scope matched no readable tables, so the account can read nothing. Check the database, schemas, listed tables and exclusions (run discover.sql to see what exists).', 1;
 PRINT CONCAT(N'ROUA: SELECT granted on ', @granted, N' objects (', @partial, N' with hidden columns).');
 GO
 `}-- 5. Record what the account is for, where every admin can see it.

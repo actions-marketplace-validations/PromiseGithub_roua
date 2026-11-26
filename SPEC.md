@@ -299,3 +299,17 @@ Read-only access prevents change, not disclosure: anything the account can read,
 ## Acknowledgements
 
 The term "ROUA" and the original concept were created by Promise Okoroji. Thanks to everyone who reviews and challenges this draft.
+
+## 18. Scope resolution and schema changes
+
+Real schemas differ from what a definition expects, and they change after setup. A conformant tool handles both explicitly:
+
+| Situation | Requirement |
+|---|---|
+| Scope resolved when setup runs | Tools **MUST** compute grants from the database's catalog at setup time, not from a list baked in when the script was generated. |
+| The scope matches nothing | Setup **MUST** fail with a clear message when an account above L0 would be able to read nothing. Where setup is transactional it **MUST** change nothing. |
+| Listed objects, schemas or hidden columns that do not exist | Tools **MUST** report them (a misspelled hidden column is a column that is *not* hidden), and **SHOULD** continue with the names that do exist. |
+| Tables created after setup | **MUST NOT** become readable until setup runs again (§10: no default or future grants). |
+| Columns added after setup | **SHOULD NOT** become readable: tools **SHOULD** grant per column by default (`scope.column_grants: always`), so a new column, possibly a secret, stays hidden until setup runs again. Engines without column read grants (Oracle, Snowflake, BigQuery, MongoDB) cannot do this; the audit (X1, and X2 if enabled) detects secret-looking columns that became readable, and tools **SHOULD** recommend a scheduled re-audit there. |
+| Tables or columns dropped after setup | Grants disappear with them; nothing to do. |
+| Preview | Tools **SHOULD** let users resolve a scope against a schema snapshot before anything runs (names and types only, never rows), and **SHOULD** ship a read-only discovery script for each engine to produce that snapshot. |

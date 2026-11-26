@@ -145,6 +145,15 @@ describe("MySQL and MariaDB", () => {
       expect(setup).toContain("CREATE EVENT roua_admin.`roua_expire_roua_agent_docs`");
     }
   });
+  it("keeps SIGNAL messages within MySQL's 128-character limit", () => {
+    for (const e of ["mysql", "mariadb"] as const) {
+      const setup = planEngine(spec(e), now).files[0]!.content;
+      const messages = [...setup.matchAll(/MESSAGE_TEXT = '([^']*)'/g)].map((m) => m[1]!);
+      expect(messages.length).toBeGreaterThan(0);
+      for (const m of messages) expect(m.length, m).toBeLessThanOrEqual(128);
+    }
+  });
+
   it("uses caching_sha2 on MySQL and a native hash on MariaDB", () => {
     expect(planEngine(spec("mysql"), now).files[0]!.content).toMatch(/caching_sha2_password AS '\$A\$005\$[A-Za-z0-9]{20}[./A-Za-z0-9]{43}'/);
     expect(planEngine(spec("mariadb"), now).files[0]!.content).toContain(`IDENTIFIED BY PASSWORD '${mysqlNativeHash(PW)}'`);

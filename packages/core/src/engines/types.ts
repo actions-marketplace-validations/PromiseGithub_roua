@@ -68,6 +68,14 @@ export interface AccountSpec {
   columnsDeny?: string[];
   /** Columns the secret detector flags by mistake. */
   columnsAllow?: string[];
+  /**
+   * "always" (default): every read grant names its columns, so a column added
+   * to the table later stays hidden until setup runs again. "when_needed":
+   * whole-table grants where nothing is hidden (simpler, but new columns become
+   * readable). Engines without column grants (Oracle, Snowflake, BigQuery,
+   * MongoDB, Redis) ignore it.
+   */
+  columnGrants?: "always" | "when_needed";
   /** Plaintext password; engines that accept a verifier get only the verifier. */
   password?: string;
   maxConnections?: number;

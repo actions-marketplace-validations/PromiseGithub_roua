@@ -38,11 +38,14 @@ No Node.js? The same checks ship as plain SQL: `psql "$ADMIN_DATABASE_URL" -v ro
 
 ```console
 $ npx @roua-dev/cli init --profile agent --name roua_agent_docs --database appdb
+$ npx @roua-dev/cli plan --check    # what the scope matches in the real schema: hidden columns, typos, empty scopes
 $ npx @roua-dev/cli plan            # prints the SQL; changes nothing
 $ npx @roua-dev/cli apply           # one transaction, then logs in AS the account and proves it
 $ npx @roua-dev/cli rotate roua_agent_docs   # new password, same grants
 $ npx @roua-dev/cli revoke roua_agent_docs
 ```
+
+Setup resolves the scope against the real catalog when it runs, refuses a scope that would read nothing, reports names that match nothing, and grants per column, so a column added later stays hidden until setup runs again ([SPEC §18](SPEC.md#18-scope-resolution-and-schema-changes)).
 
 `apply` generates a strong password, writes only a SCRAM-SHA-256 verifier into the SQL, applies everything in one transaction, then connects **as the new account**. It reruns the audit and attempts real writes and DDL, which PostgreSQL must refuse. Only then does it show the password, once.
 
@@ -77,7 +80,7 @@ plan.files; // setup.sql, audit.sql, revoke.sql, drop.sql
 ## In CI: the GitHub Action
 
 ```yaml
-- uses: PromiseGithub/roua@v0.4.0
+- uses: PromiseGithub/roua@v0.5.0
   env:
     ADMIN_DATABASE_URL: ${{ secrets.ADMIN_DATABASE_URL }}
   with:

@@ -211,7 +211,10 @@ export function planPostgres(cfg: RouaConfig, opts: PlanOptions): Plan {
         relkinds = ["v", "m"];
         warnings.push("L3: grants only the views in scope.analytics_views. Create them WITH (security_barrier) and aggregate with a minimum group size.");
       } else include = s.include?.length ? s.include : allSchemaInclude;
-      out.push(grantSelectBlock(levelRole, schemas, include, s.exclude ?? [], deny, allow, relkinds));
+      const explicit = level === "L1" || level === "L3" || Boolean(s.include?.length);
+      out.push(
+        grantSelectBlock(levelRole, schemas, include, s.exclude ?? [], deny, allow, relkinds, (s.column_grants ?? "always") === "always", explicit, s.columns_deny ?? []),
+      );
     }
   }
   out.push("");
@@ -343,14 +346,36 @@ function grantSelectBlock(
   deny: string[],
   allow: string[],
   relkinds: string[],
+  perColumn: boolean,
+  explicitInclude: boolean,
+  userDeny: string[],
 ): string {
+  const kinds = relkinds.map((k) => `'${k}'`).join(", ");
   const body = [
     ...scopeDeclarations(levelRole, schemas, include, exclude, deny, allow),
+    `  v_listed  text[] := ${textArray(explicitInclude ? include : [])};`,
+    `  v_user_deny text[] := ${textArray(userDeny)};`,
+    `  v_per_column boolean := ${perColumn ? "true" : "false"};`,
     `  r record;`,
     `  v_total int;`,
     `  v_shown int;`,
     `  v_cols text;`,
+    `  v_granted int := 0;`,
+    `  v_i int;`,
     `BEGIN`,
+    `  -- Report names that match nothing, so a typo is not silently ignored.`,
+    `  FOR v_i IN 1 .. coalesce(array_length(v_listed, 1), 0) LOOP`,
+    `    IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace`,
+    `                   WHERE c.relkind IN (${kinds}) AND (n.nspname || '.' || c.relname) ~ v_include[v_i]) THEN`,
+    `      RAISE WARNING 'ROUA: % matches no table or view: check the spelling', v_listed[v_i];`,
+    `    END IF;`,
+    `  END LOOP;`,
+    `  FOR v_i IN 1 .. coalesce(array_length(v_user_deny, 1), 0) LOOP`,
+    `    IF NOT EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace`,
+    `                   WHERE a.attnum > 0 AND NOT a.attisdropped AND n.nspname || '.' || c.relname || '.' || a.attname = v_user_deny[v_i]) THEN`,
+    `      RAISE WARNING 'ROUA: hidden column % does not exist (if it is spelled differently, it is NOT hidden)', v_user_deny[v_i];`,
+    `    END IF;`,
+    `  END LOOP;`,
     `  FOR r IN`,
     SCOPE_TABLES(relkinds),
     `  LOOP`,
@@ -364,15 +389,25 @@ function grantSelectBlock(
     `      FROM pg_attribute a`,
     `      WHERE a.attrelid = r.oid AND a.attnum > 0 AND NOT a.attisdropped`,
     `    ) x;`,
-    `    IF v_shown = v_total THEN`,
+    `    IF v_shown = v_total AND NOT v_per_column THEN`,
     `      EXECUTE format('GRANT SELECT ON TABLE %I.%I TO %I', r.nspname, r.relname, v_role);`,
+    `      v_granted := v_granted + 1;`,
     `    ELSIF v_shown > 0 THEN`,
+    `      -- Per-column grant: columns added to this table later stay hidden until setup runs again.`,
     `      EXECUTE format('GRANT SELECT (%s) ON TABLE %I.%I TO %I', v_cols, r.nspname, r.relname, v_role);`,
-    `      RAISE NOTICE 'ROUA: %.% readable without % hidden column(s)', r.nspname, r.relname, v_total - v_shown;`,
+    `      v_granted := v_granted + 1;`,
+    `      IF v_shown < v_total THEN`,
+    `        RAISE NOTICE 'ROUA: %.% readable without % hidden column(s)', r.nspname, r.relname, v_total - v_shown;`,
+    `      END IF;`,
     `    ELSE`,
     `      RAISE NOTICE 'ROUA: %.% skipped: every column is hidden', r.nspname, r.relname;`,
     `    END IF;`,
     `  END LOOP;`,
+    `  IF v_granted = 0 THEN`,
+    `    RAISE EXCEPTION 'ROUA: the scope matched no readable tables, so the account would see nothing. Nothing was changed.'`,
+    `      USING HINT = 'Check target.schemas, the listed objects and scope.exclude against the database (roua plan --check shows what matches).';`,
+    `  END IF;`,
+    `  RAISE NOTICE 'ROUA: SELECT granted on % table(s) and view(s)', v_granted;`,
   ].join("\n");
   return doBlock(body, true);
 }

@@ -34,6 +34,10 @@ import {
   planPostgres,
   renderAuditSql,
   scramSha256Verifier,
+  discoveryScript,
+  parseSchemaSnapshot,
+  previewScope,
+  snapshotTables,
   validateConfig,
   type AccountSpec,
   type Engine,
@@ -129,9 +133,42 @@ const TOOLS = [
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
+  {
+    name: "preview_scope",
+    title: "Preview an account's scope against a schema",
+    description:
+      "Before generating anything, show exactly what an account would read in a real schema: which tables, which columns stay hidden and why, and which schemas, listed names, exclusions or hidden-column entries match nothing (typos). Pass the output of the discovery script (JSON, CSV or psql table). Connects to nothing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        engine: { type: "string", enum: [...ENGINES] },
+        schema: { ...str, description: "Output of the discovery script (discover.sql / discover.js) or roua discover: JSON, CSV/TSV with schema,table,column headers, or psql table output." },
+        level: { type: "string", enum: [...LEVELS], description: "PostgreSQL: L0 to L5." },
+        mode: { type: "string", enum: ["scope", "listed", "metadata"], description: "Other engines." },
+        database: { ...str, description: "MongoDB database." },
+        schemas: strList,
+        objects: { ...strList, description: "Listed objects (L1, or analytics views for PostgreSQL L3)." },
+        include: strList,
+        exclude: strList,
+        columns_deny: strList,
+        columns_allow: strList,
+      },
+      required: ["engine", "schema"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: "discover_postgres_schema",
+    title: "Read a PostgreSQL schema (live, names only)",
+    description:
+      "Connect with ADMIN_DATABASE_URL and list schemas, tables, views and columns with their types: names only, never rows. Use it to learn how a database is structured, or feed it to preview_scope.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
 ];
 
-const text = (t: string, extra: Partial<ToolResult> = {}): ToolResult => ({ content: [{ type: "text", text: t }], ...extra });
+const text =(t: string, extra: Partial<ToolResult> = {}): ToolResult => ({ content: [{ type: "text", text: t }], ...extra });
 const fail = (t: string): ToolResult => text(t, { isError: true });
 const asList = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 const asStr = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -178,6 +215,61 @@ async function callTool(name: string, args: Json): Promise<ToolResult> {
       try {
         const report = await auditRole(conn.exec, role);
         return text(formatReport(report, { color: false }), { structuredContent: report as unknown as Json });
+      } finally {
+        await conn.close();
+      }
+    }
+
+    case "preview_scope": {
+      const engine = String(args.engine) as Engine;
+      if (!ENGINES.includes(engine)) return fail(`Unknown engine ${engine}`);
+      let snap;
+      try {
+        snap = parseSchemaSnapshot(String(args.schema ?? ""), engine);
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+      const level = asStr(args.level);
+      const pgMode = level === "L0" ? "metadata" : level === "L1" || level === "L3" ? "listed" : "scope";
+      const mode = engine === "postgresql" ? pgMode : args.mode === "listed" || engine === "redis" ? "listed" : args.mode === "metadata" ? "metadata" : "scope";
+      const db = asStr(args.database) ?? "";
+      const mongo = engine === "mongodb";
+      const preview = previewScope(
+        {
+          engine,
+          mode,
+          schemas: mongo ? [db] : asList(args.schemas),
+          include: asList(args.include),
+          objects: mongo ? asList(args.objects).map((o) => `${db}.${o}`) : asList(args.objects),
+          exclude: mongo ? asList(args.exclude).map((o) => `${db}.${o}`) : asList(args.exclude),
+          columnsDeny: asList(args.columns_deny),
+          columnsAllow: asList(args.columns_allow),
+          viewsOnly: engine === "postgresql" && level === "L3",
+          columnGrants: "always",
+        },
+        snap,
+      );
+      const lines = [
+        ...preview.errors.map((e) => `ERROR: ${e}`),
+        ...preview.warnings.map((w) => `WARNING: ${w}`),
+        ...preview.notes.map((n) => `NOTE: ${n}`),
+        "",
+        ...preview.objects.map((o) => `${o.name}: ${o.access === "all" ? "all columns" : o.access === "partial" ? `${o.visible.length} visible, hidden ${o.hidden.map((h) => `${h.column} (${h.reason})`).join(", ")}` : "skipped"}`),
+      ];
+      return text(lines.join("\n").trim(), { structuredContent: preview as unknown as Json });
+    }
+
+    case "discover_postgres_schema": {
+      const url = process.env.ADMIN_DATABASE_URL;
+      if (!url) return fail("Set ADMIN_DATABASE_URL in this MCP server's environment to read the schema.");
+      const conn = await connect(url);
+      try {
+        const sql = discoveryScript("postgresql")!.content.split("\n").filter((l) => !l.startsWith("--")).join("\n");
+        const rows = await conn.exec(sql);
+        const snap = parseSchemaSnapshot(JSON.stringify(Object.values(rows[0] ?? {})[0] ?? []), "postgresql");
+        const tables = snapshotTables(snap);
+        const summary = tables.map((t) => `${t.schema}.${t.table}${t.kind === "view" ? " (view)" : ""}: ${t.columns.map((c) => `${c.column}${c.type ? ` ${c.type}` : ""}`).join(", ")}`);
+        return text(`${tables.length} table(s) and view(s). Names and types only, no rows.\n\n${summary.join("\n")}`, { structuredContent: { columns: snap.columns } as unknown as Json });
       } finally {
         await conn.close();
       }
